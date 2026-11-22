@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shadex_vpn/l10n.dart';
 import 'package:shadex_vpn/servers.dart';
 
 void main() {
@@ -50,5 +51,25 @@ void main() {
     final ranked = ServerApi.ranked(list);
     expect(ranked.first.countryShort, 'JP');
     expect(ranked.last.countryShort, 'KR');
+  });
+
+  test('7 dilin hepsinde metinler dolu', () {
+    for (final c in L10n.codes) {
+      L10n.preference.value = c;
+      expect(L10n.code, c);
+      expect(tr('btn_connect').isNotEmpty, isTrue);
+      expect(tr('trying_next', {'n': 2, 'max': 4}).contains('2/4'), isTrue);
+      expect(tr('olmayan_anahtar'), 'olmayan_anahtar');
+    }
+    L10n.preference.value = null;
+  });
+
+  test('hızlı DNS ayardan kapatılabilir', () {
+    final cfg = ServerApi.parse(body).first.config;
+    expect(ServerApi.prepareConfig(cfg).contains('dhcp-option DNS'), isTrue);
+    expect(
+      ServerApi.prepareConfig(cfg, fastDns: false).contains('dhcp-option'),
+      isFalse,
+    );
   });
 }

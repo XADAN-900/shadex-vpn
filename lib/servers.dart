@@ -188,9 +188,9 @@ class ServerApi {
         : servers;
   }
 
-  /// Bağlanmaya hazır yapılandırma: yorumları atar, giriş bilgisini ve
-  /// kısa bağlantı zaman aşımını ekler.
-  static String prepareConfig(String config) {
+  /// Bağlanmaya hazır yapılandırma: yorumları atar, giriş bilgisini,
+  /// kısa bağlantı zaman aşımını ve istenirse hızlı DNS'i ekler.
+  static String prepareConfig(String config, {bool fastDns = true}) {
     final lines = config
         .replaceAll('\r\n', '\n')
         .split('\n')
@@ -205,6 +205,10 @@ class ServerApi {
     final extra = <String>[
       if (!has('auth-user-pass')) 'auth-user-pass',
       if (!has('connect-timeout')) 'connect-timeout 8',
+      if (fastDns) ...[
+        'dhcp-option DNS 1.1.1.1',
+        'dhcp-option DNS 8.8.8.8',
+      ],
     ];
     // Seçenekler satır içi blokların (<ca>, <cert>…) önüne eklenir.
     final firstBlock = lines.indexWhere((l) => l.trimLeft().startsWith('<'));
@@ -243,7 +247,7 @@ class ServerApi {
   /// İlk [count] sunucuyu paralel ölçer; [onProgress] her sonuçta çağrılır.
   static Future<void> measureAll(
     List<VpnServer> servers, {
-    int count = 40,
+    int count = 60,
     int parallel = 20,
     VoidCallback? onProgress,
   }) async {
@@ -258,21 +262,27 @@ class ServerApi {
     }
   }
 
-  /// Önerilen sıralama: ulaşılabilir ve hızlı olanlar başta,
-  /// ölçülmeyenler puana göre ortada, ulaşılamayanlar sonda.
+  /// Önerilen sıralama: ulaşılabilir sunucular kalite puanına göre başta,
+  /// ölçülmeyenler ortada, ulaşılamayanlar sonda.
+  /// Kalite: yüksek hız iyi, düşük gecikme iyi, kalabalık sunucu kötü.
   static List<VpnServer> ranked(Iterable<VpnServer> servers) {
     final list = servers.toList();
-    int tier(VpnServer s) => s.reachable ? 0 : (s.unreachable ? 2 : 1);
-    double cost(VpnServer s) {
-      final mbps = s.speed / 1000000;
-      final load = s.sessions * 2.0;
-      return s.latency! + load - (mbps > 100 ? 100 : mbps);
+    int tier(VpnServer s) {
+      if (s.unreachable) return 3;
+      if (!s.reachable) return 2;
+      return s.speed < 3000000 ? 1 : 0; // 3 Mbps altı yavaş
+    }
+
+    double quality(VpnServer s) {
+      final mbps = (s.speed / 1000000).clamp(0, 300).toDouble();
+      final perUser = mbps / (1 + s.sessions / 8);
+      return perUser * 2 + mbps * 0.5 - s.latency! / 15;
     }
 
     list.sort((a, b) {
       final t = tier(a).compareTo(tier(b));
       if (t != 0) return t;
-      if (a.reachable) return cost(a).compareTo(cost(b));
+      if (a.reachable) return quality(b).compareTo(quality(a));
       return b.score.compareTo(a.score);
     });
     return list;

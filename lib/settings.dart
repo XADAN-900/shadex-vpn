@@ -1,7 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'l10n.dart';
 import 'theme.dart';
+
+const appVersion = '1.2.0';
+const shareLink =
+    'https://github.com/XADAN-900/shadex-vpn/releases/latest/download/ShadeX-VPN.apk';
 
 /// Kullanıcı ayarları (SharedPreferences'ta saklanır).
 class AppSettings {
@@ -20,6 +26,10 @@ class AppSettings {
   bool get autoSwitch => _get('auto_switch', true);
   set autoSwitch(bool v) => _set('auto_switch', v);
 
+  /// Sunucunun DNS'i yerine hızlı genel DNS kullan.
+  bool get fastDns => _get('fast_dns', true);
+  set fastDns(bool v) => _set('fast_dns', v);
+
   /// Bildirimde indirme/yükleme hızını göster.
   bool get trafficInNotification => _get('notif_traffic', true);
   set trafficInNotification(bool v) => _set('notif_traffic', v);
@@ -31,6 +41,16 @@ class AppSettings {
   /// Titreşimli geri bildirim.
   bool get haptics => _get('haptics', true);
   set haptics(bool v) => _set('haptics', v);
+
+  /// Dil kodu; null ise sistem dili.
+  String? get language => _p?.getString('language');
+  set language(String? v) {
+    if (v == null) {
+      _p?.remove('language');
+    } else {
+      _p?.setString('language', v);
+    }
+  }
 
   /// Favori ülke kodları.
   Set<String> get favorites =>
@@ -68,7 +88,7 @@ class _SettingsPageState extends State<SettingsPage> {
   AppSettings get s => widget.settings;
 
   Widget _section(String title) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+        padding: const EdgeInsetsDirectional.fromSTEB(20, 20, 20, 8),
         child: Text(
           title.toUpperCase(),
           style: TextStyle(
@@ -116,6 +136,7 @@ class _SettingsPageState extends State<SettingsPage> {
     required IconData icon,
     required String title,
     String? subtitle,
+    Widget? trailing,
     required VoidCallback onTap,
   }) {
     return ListTile(
@@ -124,83 +145,138 @@ class _SettingsPageState extends State<SettingsPage> {
       subtitle: subtitle == null
           ? null
           : Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
-      trailing: const Icon(Icons.chevron_right_rounded),
+      trailing: trailing ?? const Icon(Icons.chevron_right_rounded),
       onTap: onTap,
     );
   }
 
+  void _snack(String msg) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _chooseLanguage() async {
+    final current = s.language;
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        backgroundColor: AppColors.surface,
+        title: Text(tr('language')),
+        children: [
+          for (final code in <String?>[null, ...L10n.codes])
+            ListTile(
+              title: Text(
+                code == null ? tr('system_language') : L10n.names[code]!,
+              ),
+              trailing: current == code
+                  ? const Icon(
+                      Icons.check_circle_rounded,
+                      color: AppColors.green,
+                    )
+                  : null,
+              onTap: () => Navigator.pop(ctx, code ?? 'system'),
+            ),
+        ],
+      ),
+    );
+    if (picked == null) return;
+    final value = picked == 'system' ? null : picked;
+    s.language = value;
+    L10n.preference.value = value;
+  }
+
   @override
   Widget build(BuildContext context) {
+    L10n.watch(context);
+    final lang = s.language;
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
         backgroundColor: AppColors.bg,
         surfaceTintColor: Colors.transparent,
-        title: const Text(
-          'Ayarlar',
-          style: TextStyle(fontWeight: FontWeight.w800),
+        title: Text(
+          tr('settings'),
+          style: const TextStyle(fontWeight: FontWeight.w800),
         ),
       ),
       body: ListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: [
-          _section('Bağlantı'),
+          _section(tr('sec_general')),
+          _card([
+            _tile(
+              icon: Icons.translate_rounded,
+              title: tr('language'),
+              subtitle: lang == null
+                  ? '${tr('system_language')} • ${L10n.names[L10n.code]}'
+                  : L10n.names[lang],
+              onTap: _chooseLanguage,
+            ),
+          ]),
+          _section(tr('sec_connection')),
           _card([
             _switch(
               icon: Icons.flash_on_rounded,
-              title: 'Açılışta otomatik bağlan',
-              subtitle: 'Uygulama açılınca en hızlı sunucuya bağlanır',
+              title: tr('auto_connect'),
+              subtitle: tr('auto_connect_d'),
               value: s.autoConnect,
               onChanged: (v) => s.autoConnect = v,
             ),
             _switch(
               icon: Icons.alt_route_rounded,
-              title: 'Akıllı sunucu değiştirme',
-              subtitle: 'Bağlantı kurulamazsa sıradaki en iyi sunucuyu dener',
+              title: tr('auto_switch'),
+              subtitle: tr('auto_switch_d'),
               value: s.autoSwitch,
               onChanged: (v) => s.autoSwitch = v,
             ),
             _switch(
+              icon: Icons.dns_rounded,
+              title: tr('fast_dns'),
+              subtitle: tr('fast_dns_d'),
+              value: s.fastDns,
+              onChanged: (v) => s.fastDns = v,
+            ),
+            _switch(
               icon: Icons.close_fullscreen_rounded,
-              title: 'Kapatınca bağlantıyı kes',
-              subtitle: 'Uygulama son kullanılanlardan silinince VPN kapanır',
+              title: tr('kill_on_close'),
+              subtitle: tr('kill_on_close_d'),
               value: s.disconnectOnClose,
               onChanged: (v) => s.disconnectOnClose = v,
             ),
           ]),
-          _section('Güvenlik'),
+          _section(tr('sec_security')),
           _card([
             _tile(
               icon: Icons.shield_moon_outlined,
-              title: 'Kill Switch ve Her zaman açık VPN',
-              subtitle:
-                  'Android ayarlarında ShadeX için ikisini de aç: VPN koparsa internet kesilir',
+              title: tr('kill_switch'),
+              subtitle: tr('kill_switch_d'),
               onTap: () => widget.onOpenSystemVpn(),
             ),
           ]),
-          _section('Görünüm'),
+          _section(tr('sec_appearance')),
           _card([
             _switch(
               icon: Icons.speed_rounded,
-              title: 'Bildirimde hızı göster',
-              subtitle: 'İndirme ve yükleme hızını bildirimde gösterir',
+              title: tr('notif_speed'),
+              subtitle: tr('notif_speed_d'),
               value: s.trafficInNotification,
               onChanged: (v) => s.trafficInNotification = v,
             ),
             _switch(
               icon: Icons.vibration_rounded,
-              title: 'Titreşim',
-              subtitle: 'Düğmeye basınca hafif titreşir',
+              title: tr('haptics'),
+              subtitle: tr('haptics_d'),
               value: s.haptics,
               onChanged: (v) => s.haptics = v,
             ),
           ]),
-          _section('Sunucular'),
+          _section(tr('sec_servers')),
           _card([
             _tile(
               icon: Icons.refresh_rounded,
-              title: 'Sunucu listesini yenile',
-              subtitle: 'Listeyi indirir ve hızları yeniden ölçer',
+              title: tr('refresh_list'),
+              subtitle: tr('refresh_list_d'),
               onTap: () {
                 widget.onRefreshServers();
                 Navigator.of(context).pop();
@@ -208,41 +284,40 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             _tile(
               icon: Icons.star_outline_rounded,
-              title: 'Favori ülkeleri temizle',
+              title: tr('clear_favs'),
               onTap: () {
                 s.favorites = <String>{};
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Favoriler temizlendi.')),
-                );
+                _snack(tr('favs_cleared'));
               },
             ),
           ]),
-          _section('Hakkında'),
+          _section(tr('sec_about')),
           _card([
             _tile(
+              icon: Icons.share_rounded,
+              title: tr('share_app'),
+              subtitle: tr('share_app_d'),
+              trailing: const Icon(Icons.copy_rounded, size: 20),
+              onTap: () async {
+                await Clipboard.setData(const ClipboardData(text: shareLink));
+                if (mounted) _snack(tr('link_copied'));
+              },
+            ),
+            _tile(
               icon: Icons.privacy_tip_outlined,
-              title: 'Gizlilik',
+              title: tr('privacy'),
               onTap: () => showDialog<void>(
                 context: context,
                 builder: (ctx) => AlertDialog(
                   backgroundColor: AppColors.surface,
-                  title: const Text('Gizlilik'),
-                  content: const SingleChildScrollView(
-                    child: Text(
-                      'ShadeX hesap istemez, kişisel veri toplamaz ve '
-                      'reklam göstermez.\n\n'
-                      'Trafiğin, seçtiğin ülkedeki sunucuya şifreli tünelle '
-                      'gider. Sunucular gönüllü operatörlerce işletilir ve '
-                      'bağlantı kayıtları bir süre tutulabilir. Bu yüzden '
-                      'ShadeX, engelleri aşmak ve halka açık Wi-Fi\'da '
-                      'korunmak için uygundur; tam anonimlik gerektiren '
-                      'işler için uygun değildir.',
-                    ),
+                  title: Text(tr('privacy')),
+                  content: SingleChildScrollView(
+                    child: Text(tr('privacy_text')),
                   ),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(ctx),
-                      child: const Text('Tamam'),
+                      child: Text(tr('ok')),
                     ),
                   ],
                 ),
@@ -250,11 +325,11 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             _tile(
               icon: Icons.code_rounded,
-              title: 'Açık kaynak lisansları',
+              title: tr('licenses'),
               onTap: () => showLicensePage(
                 context: context,
                 applicationName: 'ShadeX VPN',
-                applicationVersion: '1.1.0',
+                applicationVersion: appVersion,
                 applicationIcon: Padding(
                   padding: const EdgeInsets.all(12),
                   child: Image.asset(
@@ -265,10 +340,10 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
             ),
-            const ListTile(
-              leading: Icon(Icons.info_outline_rounded),
-              title: Text('Sürüm'),
-              trailing: Text('1.1.0'),
+            ListTile(
+              leading: const Icon(Icons.info_outline_rounded),
+              title: Text(tr('version')),
+              trailing: const Text(appVersion),
             ),
           ]),
         ],

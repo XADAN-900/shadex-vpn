@@ -19,7 +19,9 @@
 - **IP kontrolü:** bağlanmadan önce gerçek IP'ni, bağlandıktan sonra VPN IP'sini ve ülkesini gösterir.
 - **Ayarlar:** açılışta otomatik bağlan, akıllı sunucu değiştirme, kapatınca bağlantıyı kes, bildirimde hız, titreşim, Kill Switch kısayolu.
 - **Hızlı açılış:** sunucu listesi önbellekten anında gelir, arka planda güncellenir.
-- **Taşma yok:** küçük ekranda içerik kayar, büyük yazı boyutunda düzen bozulmaz.
+- **Hızlı DNS:** siteler daha hızlı açılır, DNS sızıntısı önlenir (ayarlardan kapatılabilir).
+- **7 dil:** Türkçe, English, Français, Español, Português, Русский, العربية (sağdan sola destekli).
+- **Taşma yok:** ana ekran kaymaz, her ekran boyutuna kendini sığdırır; büyük yazı boyutunda düzen bozulmaz.
 
 ## APK
 

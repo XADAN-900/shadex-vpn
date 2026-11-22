@@ -148,13 +148,23 @@ void _notificationResources() {
       ..createSync(recursive: true);
     icon.copySync('${dir.path}/ic_notification.png');
   }
-  final strings = File('android/app/src/main/res/values/strings.xml');
-  if (!strings.existsSync()) {
-    strings.parent.createSync(recursive: true);
-    strings.writeAsStringSync('<?xml version="1.0" encoding="utf-8"?>\n'
+  // Bildirimdeki "bağlantıyı kes" düğmesi, telefonun diline göre.
+  const texts = {
+    'values': 'Disconnect',
+    'values-tr': 'Bağlantıyı kes',
+    'values-fr': 'Déconnecter',
+    'values-es': 'Desconectar',
+    'values-pt': 'Desconectar',
+    'values-ru': 'Отключить',
+    'values-ar': 'قطع الاتصال',
+  };
+  texts.forEach((folder, text) {
+    final f = File('android/app/src/main/res/$folder/strings.xml');
+    f.parent.createSync(recursive: true);
+    f.writeAsStringSync('<?xml version="1.0" encoding="utf-8"?>\n'
         '<resources>\n'
-        '    <string name="cancel_connection">Bağlantıyı kes</string>\n'
+        '    <string name="cancel_connection">$text</string>\n'
         '</resources>\n');
-  }
+  });
   stdout.writeln('  • bildirim ikonu ve metni');
 }

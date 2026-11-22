@@ -113,6 +113,7 @@ class PowerButton extends StatefulWidget {
     required this.color,
     required this.connected,
     required this.busy,
+    required this.label,
     required this.onTap,
   });
 
@@ -120,6 +121,7 @@ class PowerButton extends StatefulWidget {
   final Color color;
   final bool connected;
   final bool busy;
+  final String label;
   final VoidCallback onTap;
 
   @override
@@ -178,11 +180,7 @@ class _PowerButtonState extends State<PowerButton>
   @override
   Widget build(BuildContext context) {
     final s = widget.size;
-    final label = widget.connected
-        ? 'BAĞLANTIYI KES'
-        : widget.busy
-            ? 'İPTAL'
-            : 'BAĞLAN';
+    final label = widget.label;
 
     return SizedBox(
       width: s * 1.34,
@@ -376,10 +374,16 @@ class FlagBadge extends StatelessWidget {
 
 /// Ping rozeti: yeşil iyi, sarı orta, kırmızı kötü; ulaşılamıyorsa "Kapalı".
 class PingBadge extends StatelessWidget {
-  const PingBadge(this.ping, {super.key, this.offline = false});
+  const PingBadge(
+    this.ping, {
+    super.key,
+    this.offline = false,
+    this.offlineText = 'Offline',
+  });
 
   final int ping;
   final bool offline;
+  final String offlineText;
 
   @override
   Widget build(BuildContext context) {
@@ -392,7 +396,7 @@ class PingBadge extends StatelessWidget {
                 : ping < 300
                     ? AppColors.amber
                     : AppColors.red;
-    final text = offline ? 'Kapalı' : (ping > 0 ? '$ping ms' : '— ms');
+    final text = offline ? offlineText : (ping > 0 ? '$ping ms' : '— ms');
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
