@@ -1,5 +1,3 @@
-import 'dart:ui' show PlatformDispatcher;
-
 import 'package:flutter/widgets.dart';
 
 /// Basit çeviri sistemi. Sıra: tr, en, fr, es, pt, ru, ar.
@@ -18,18 +16,12 @@ class L10n {
   /// Varsayılan dil: uygulama ilk açılışta İngilizce başlar.
   static const defaultCode = 'en';
 
-  /// Seçili dil: null = varsayılan (İngilizce), 'system' = telefonun dili,
-  /// diğerleri dil kodu.
+  /// Seçili dil kodu; null ya da bilinmeyen kod = varsayılan (İngilizce).
   static final ValueNotifier<String?> preference = ValueNotifier(null);
 
   static String get code {
     final p = preference.value;
-    if (p == null) return defaultCode;
-    if (p == 'system') {
-      final sys = PlatformDispatcher.instance.locale.languageCode;
-      return codes.contains(sys) ? sys : defaultCode;
-    }
-    return codes.contains(p) ? p : defaultCode;
+    return p != null && codes.contains(p) ? p : defaultCode;
   }
 
   static Locale get locale => Locale(code);
@@ -120,7 +112,6 @@ const Map<String, List<String>> _strings = {
   // ---------------------------------------------------------------- ayarlar
   'sec_general': ["Genel", "General", "Général", "General", "Geral", "Общие", "عام"],
   'language': ["Dil", "Language", "Langue", "Idioma", "Idioma", "Язык", "اللغة"],
-  'system_language': ["Sistem dili", "System language", "Langue du système", "Idioma del sistema", "Idioma do sistema", "Язык системы", "لغة النظام"],
   'sec_connection': ["Bağlantı", "Connection", "Connexion", "Conexión", "Conexão", "Подключение", "الاتصال"],
   'auto_connect': ["Açılışta otomatik bağlan", "Connect on launch", "Connexion au démarrage", "Conectar al abrir", "Conectar ao abrir", "Подключаться при запуске", "الاتصال عند التشغيل"],
   'auto_connect_d': ["Uygulama açılınca en hızlı sunucuya bağlanır", "Connects to the fastest server when the app opens", "Se connecte au serveur le plus rapide à l'ouverture", "Se conecta al servidor más rápido al abrir", "Conecta ao servidor mais rápido ao abrir", "Подключается к быстрому серверу при запуске", "يتصل بأسرع خادم عند فتح التطبيق"],

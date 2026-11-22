@@ -63,6 +63,9 @@ void main() {
     }
     L10n.preference.value = null;
     expect(L10n.code, 'en'); // ilk açılış İngilizce
+    L10n.preference.value = 'system'; // eski sürümden kalan değer
+    expect(L10n.code, 'en');
+    L10n.preference.value = null;
   });
 
   test('hızlı DNS ayardan kapatılabilir', () {
