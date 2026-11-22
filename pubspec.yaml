@@ -1,0 +1,32 @@
+name: shadex_vpn
+description: ShadeX VPN - açık kaynaklı, ücretsiz VPN Gate sunucularıyla çalışan Flutter VPN uygulaması.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  openvpn_flutter: ^2.0.0
+  http: ^1.2.0
+  shared_preferences: ^2.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.14.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/logo/logo.png
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/logo/icon.png"
+  adaptive_icon_background: "#140F30"
+  adaptive_icon_foreground: "assets/logo/icon_foreground.png"
+  min_sdk_android: 21

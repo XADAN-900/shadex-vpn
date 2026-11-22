@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="-10 -10 120 120">
+<g id="mark">
+  <defs>
+    <linearGradient id="sg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22D3EE"/>
+      <stop offset="0.55" stop-color="#7C3AED"/>
+      <stop offset="1" stop-color="#EC4899"/>
+    </linearGradient>
+    <linearGradient id="hl" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.35"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3.5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <path d="M50 4 L87 17 C87 52 73 79 50 96 C27 79 13 52 13 17 Z" fill="url(#sg)" filter="url(#glow)"/>
+  <path d="M50 4 L87 17 C87 52 73 79 50 96 C27 79 13 52 13 17 Z" fill="url(#hl)"/>
+  <path d="M50 10.5 L81.5 21.5 C81 51 69 73.5 50 88.5 C31 73.5 19 51 18.5 21.5 Z" fill="none" stroke="#FFFFFF" stroke-opacity="0.28" stroke-width="1.2"/>
+  <g>
+    <polygon points="31,30 40.5,30 69,72 59.5,72" fill="#0B0B1A" fill-opacity="0.35" transform="translate(1.4 2.2)"/>
+    <polygon points="59.5,30 69,30 58.2,45.9 48.7,45.9" fill="#120A2E" fill-opacity="0.85"/>
+    <polygon points="41.8,56.1 51.3,56.1 40.5,72 31,72" fill="#120A2E" fill-opacity="0.85"/>
+    <polygon points="31,30 40.5,30 69,72 59.5,72" fill="#FFFFFF"/>
+  </g>
+</g>
+</svg>

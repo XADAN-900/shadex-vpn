@@ -1,0 +1,14 @@
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+.idea/
+*.iml
+.vscode/
+pubspec.lock
+# android/ klasörü derleme sırasında otomatik üretilir
+/android/

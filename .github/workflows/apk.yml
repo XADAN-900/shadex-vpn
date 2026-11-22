@@ -1,0 +1,62 @@
+name: ShadeX APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Android iskeletini oluştur
+        run: flutter create --platforms=android --org com.shadex --project-name shadex_vpn .
+
+      - name: Bağımlılıklar
+        run: flutter pub get
+
+      - name: Uygulama ikonu
+        run: dart run flutter_launcher_icons
+
+      - name: Android ayarları (VPN)
+        run: dart run tool/android_kur.dart
+
+      - name: Test
+        run: flutter test
+
+      - name: APK derle
+        run: flutter build apk --release
+
+      - name: APK'yı adlandır
+        run: cp build/app/outputs/flutter-apk/app-release.apk ShadeX-VPN.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShadeX-VPN-apk
+          path: ShadeX-VPN.apk
+
+      - name: Release yayınla
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: ShadeX VPN v1.0.${{ github.run_number }}
+          body: |
+            Telefona kurmak için aşağıdaki **ShadeX-VPN.apk** dosyasını indir.
+            Kurulumda "bilinmeyen kaynaklar" izni isteyebilir.
+          files: ShadeX-VPN.apk
+          make_latest: true
