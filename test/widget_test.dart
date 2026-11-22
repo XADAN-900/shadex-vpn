@@ -62,6 +62,7 @@ void main() {
       expect(tr('olmayan_anahtar'), 'olmayan_anahtar');
     }
     L10n.preference.value = null;
+    expect(L10n.code, 'en'); // ilk açılış İngilizce
   });
 
   test('hızlı DNS ayardan kapatılabilir', () {

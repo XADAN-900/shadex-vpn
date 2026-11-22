@@ -15,14 +15,21 @@ class L10n {
     'ar': 'العربية',
   };
 
-  /// Seçili dil. null ise sistem dili kullanılır.
+  /// Varsayılan dil: uygulama ilk açılışta İngilizce başlar.
+  static const defaultCode = 'en';
+
+  /// Seçili dil: null = varsayılan (İngilizce), 'system' = telefonun dili,
+  /// diğerleri dil kodu.
   static final ValueNotifier<String?> preference = ValueNotifier(null);
 
   static String get code {
     final p = preference.value;
-    if (p != null && codes.contains(p)) return p;
-    final sys = PlatformDispatcher.instance.locale.languageCode;
-    return codes.contains(sys) ? sys : 'en';
+    if (p == null) return defaultCode;
+    if (p == 'system') {
+      final sys = PlatformDispatcher.instance.locale.languageCode;
+      return codes.contains(sys) ? sys : defaultCode;
+    }
+    return codes.contains(p) ? p : defaultCode;
   }
 
   static Locale get locale => Locale(code);

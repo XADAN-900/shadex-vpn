@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'l10n.dart';
 import 'theme.dart';
 
-const appVersion = '1.2.0';
+const appVersion = '1.2.1';
 const shareLink =
     'https://github.com/XADAN-900/shadex-vpn/releases/latest/download/ShadeX-VPN.apk';
 
@@ -42,7 +42,7 @@ class AppSettings {
   bool get haptics => _get('haptics', true);
   set haptics(bool v) => _set('haptics', v);
 
-  /// Dil kodu; null ise sistem dili.
+  /// Dil kodu; null = varsayılan (İngilizce), 'system' = telefonun dili.
   String? get language => _p?.getString('language');
   set language(String? v) {
     if (v == null) {
@@ -157,17 +157,17 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _chooseLanguage() async {
-    final current = s.language;
+    final current = s.language ?? L10n.defaultCode;
     final picked = await showDialog<String>(
       context: context,
       builder: (ctx) => SimpleDialog(
         backgroundColor: AppColors.surface,
         title: Text(tr('language')),
         children: [
-          for (final code in <String?>[null, ...L10n.codes])
+          for (final code in ['system', ...L10n.codes])
             ListTile(
               title: Text(
-                code == null ? tr('system_language') : L10n.names[code]!,
+                code == 'system' ? tr('system_language') : L10n.names[code]!,
               ),
               trailing: current == code
                   ? const Icon(
@@ -175,15 +175,14 @@ class _SettingsPageState extends State<SettingsPage> {
                       color: AppColors.green,
                     )
                   : null,
-              onTap: () => Navigator.pop(ctx, code ?? 'system'),
+              onTap: () => Navigator.pop(ctx, code),
             ),
         ],
       ),
     );
     if (picked == null) return;
-    final value = picked == 'system' ? null : picked;
-    s.language = value;
-    L10n.preference.value = value;
+    s.language = picked;
+    L10n.preference.value = picked;
   }
 
   @override
@@ -208,9 +207,9 @@ class _SettingsPageState extends State<SettingsPage> {
             _tile(
               icon: Icons.translate_rounded,
               title: tr('language'),
-              subtitle: lang == null
+              subtitle: lang == 'system'
                   ? '${tr('system_language')} • ${L10n.names[L10n.code]}'
-                  : L10n.names[lang],
+                  : L10n.names[L10n.code],
               onTap: _chooseLanguage,
             ),
           ]),
