@@ -12,12 +12,13 @@
 
 ## Özellikler
 
-- **Ücretsiz sunucular:** [VPN Gate](https://www.vpngate.net) (Tsukuba Üniversitesi) gönüllü sunucuları otomatik listelenir. Kayıt ve reklam yok.
+- **Ücretsiz ve reklamsız:** dünyanın dört bir yanında sunucu, kayıt yok, hesap yok.
+- **Hızlı bağlantı:** sunucuların gerçek hızını cihazından ölçer, en hızlısını otomatik seçer. Bağlantı kurulamazsa sıradaki en iyi sunucuyu kendisi dener.
 - **Tek dokunuş:** büyük bağlan düğmesi; bağlıyken nabız animasyonu, süre sayacı, indirme ve yükleme miktarı ile hızı.
-- **Hızlı bağlan:** en iyi sunucuyu seçip doğrudan bağlanır.
-- **Sunucu seçici:** ülke arama; *Önerilen / En hızlı / En düşük ping* sıralaması; renkli ping rozetleri.
+- **Konum seçici:** ülke arama; *Önerilen / En hızlı / En düşük ping / Favoriler* sekmeleri; renkli ping rozetleri; favori ülkeler.
 - **IP kontrolü:** bağlanmadan önce gerçek IP'ni, bağlandıktan sonra VPN IP'sini ve ülkesini gösterir.
-- **Kendi sunucun:** menüden herhangi bir `.ovpn` dosyasını (gerekirse kullanıcı adı ve şifreyle) kullanabilirsin. Uygulama bunu hatırlar.
+- **Ayarlar:** açılışta otomatik bağlan, akıllı sunucu değiştirme, kapatınca bağlantıyı kes, bildirimde hız, titreşim, Kill Switch kısayolu.
+- **Hızlı açılış:** sunucu listesi önbellekten anında gelir, arka planda güncellenir.
 - **Taşma yok:** küçük ekranda içerik kayar, büyük yazı boyutunda düzen bozulmaz.
 
 ## APK
@@ -34,13 +35,12 @@ dart run tool/android_kur.dart
 flutter build apk --release
 ```
 
-`android/` klasörü bilerek repoda yok. `flutter create` onu üretiyor, `tool/android_kur.dart` de VPN için gerekenleri ekliyor: izinler, native kütüphane ayarı, VPN Gate için HTTP izni, bildirim ikonu.
+`android/` klasörü bilerek repoda yok. `flutter create` onu üretiyor, `tool/android_kur.dart` de VPN için gerekenleri ekliyor: izinler, native kütüphane ayarı, sunucu listesi için HTTP izni, bildirim ikonu.
 
 ## Bilmen gerekenler
 
-- VPN Gate sunucuları gönüllülerin bilgisayarlarıdır; hızları değişir. Biri bağlanmazsa başkasını dene.
+- Sunucular gönüllü operatörlerce işletilir; hızları değişebilir. Uygulama bağlanamadığı sunucuda beklemez, sıradakine geçer.
 - Operatörler bağlantı kayıtlarını bir süre tutar. Uygulama engelli siteleri açmak ve genel kullanım için uygundur, **tam anonimlik için uygun değildir**.
-- Liste yüklenmiyorsa vpngate.net ağında engelli olabilir. Bu durumda kendi `.ovpn` dosyanı kullan.
 
 ## Lisans
 

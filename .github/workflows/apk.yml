@@ -53,8 +53,8 @@ jobs:
       - name: Release yayınla
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: ShadeX VPN v1.0.${{ github.run_number }}
+          tag_name: v1.1.${{ github.run_number }}
+          name: ShadeX VPN v1.1.${{ github.run_number }}
           body: |
             Telefona kurmak için aşağıdaki **ShadeX-VPN.apk** dosyasını indir.
             Kurulumda "bilinmeyen kaynaklar" izni isteyebilir.

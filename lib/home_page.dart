@@ -8,33 +8,34 @@ import 'package:openvpn_flutter/openvpn_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ip_info.dart';
+import 'servers.dart';
+import 'settings.dart';
 import 'theme.dart';
-import 'vpngate.dart';
 import 'widgets.dart';
 
 const Map<String, String> _stageTr = {
   'prepare': 'Hazırlanıyor',
-  'vpn_generate_config': 'Yapılandırma hazırlanıyor',
-  'resolve': 'Adres çözülüyor',
+  'vpn_generate_config': 'Hazırlanıyor',
+  'resolve': 'Sunucu bulunuyor',
   'tcp_connect': 'Sunucuya bağlanılıyor',
   'udp_connect': 'Sunucuya bağlanılıyor',
   'wait_connection': 'Sunucu bekleniyor',
-  'authenticating': 'Kimlik doğrulanıyor',
-  'authentication': 'Kimlik doğrulanıyor',
+  'authenticating': 'Güvenli oturum açılıyor',
+  'authentication': 'Güvenli oturum açılıyor',
   'get_config': 'Ayarlar alınıyor',
   'assign_ip': 'IP adresi alınıyor',
-  'add_routes': 'Yönlendirme ekleniyor',
+  'add_routes': 'Tünel hazırlanıyor',
   'connecting': 'Bağlanıyor',
   'connected': 'Korumalı • Bağlı',
   'reconnect': 'Yeniden bağlanıyor',
-  'no_network': 'İnternet bağlantısı yok',
+  'no_network': 'İnternet bekleniyor',
   'paused': 'Duraklatıldı',
   'auth_pending': 'Doğrulama bekleniyor',
   'disconnecting': 'Bağlantı kesiliyor',
   'exiting': 'Korumasız',
   'disconnected': 'Korumasız',
   'denied': 'VPN izni verilmedi',
-  'auth_failed': 'Kimlik doğrulama başarısız',
+  'auth_failed': 'Sunucu bağlantıyı reddetti',
   'error': 'Bağlantı hatası',
   'unknown': 'Korumasız',
 };
@@ -48,7 +49,10 @@ const _idleStages = {
   'exiting',
 };
 
-const _errorStages = {'denied', 'error', 'auth_failed'};
+const _failureStages = {'error', 'auth_failed'};
+
+/// Bağlantı kurulamazsa en fazla kaç sunucu denensin.
+const _maxAttempts = 4;
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -59,23 +63,29 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   late final OpenVPN _engine;
-  SharedPreferences? _prefs;
+  AppSettings _settings = AppSettings(null);
 
+  // Bağlantı durumu
   String _stageName = 'disconnected';
-  Object? _status; // VpnStatus
+  VpnStatus? _status;
   bool _starting = false;
-  Timer? _startTimeout;
+  bool _userCancelled = false;
+  Timer? _watchdog;
+  int _attempt = 0;
+  final Set<String> _tried = {};
+  String? _note;
+  bool _autoConnectDone = false;
 
+  // Sunucular
   List<VpnServer> _servers = [];
   VpnServer? _selected;
+  bool _userPicked = false;
   bool _loading = true;
+  bool _measuring = false;
   String? _error;
+  Set<String> _favorites = {};
 
-  String? _customConfig;
-  String _customUser = '';
-  String _customPass = '';
-  bool _useCustom = false;
-
+  // IP
   IpInfo? _ip;
   bool _ipLoading = false;
   Timer? _ipTimer;
@@ -85,7 +95,7 @@ class _HomePageState extends State<HomePage> {
   bool get _busy => _starting || (!_idle && !_connected);
   bool get _locked => _connected || _busy;
 
-  // ------------------------------------------------------------- yaşam döngüsü
+  // ------------------------------------------------------------ yaşam döngüsü
 
   @override
   void initState() {
@@ -97,90 +107,124 @@ class _HomePageState extends State<HomePage> {
       },
       onVpnStageChanged: (stage, raw) => _onStage(stage.name),
     );
-    _engine.initialize(
-      groupIdentifier: 'group.com.shadex.vpn',
-      providerBundleIdentifier: 'com.shadex.shadex_vpn.VPNExtension',
-      localizedDescription: 'ShadeX VPN',
-      lastStage: (stage) => _onStage(stage.name),
-      lastStatus: (status) {
-        if (mounted) setState(() => _status = status);
-      },
-      showTrafficInNotification: true,
-      disconnectOnTaskRemoved: false,
-    );
     WidgetsBinding.instance.addPostFrameCallback((_) => _init());
   }
 
   Future<void> _init() async {
+    SharedPreferences? prefs;
     try {
-      final p = await SharedPreferences.getInstance();
-      _prefs = p;
-      if (mounted) {
-        setState(() {
-          _customConfig = p.getString('custom_config');
-          _customUser = p.getString('custom_user') ?? '';
-          _customPass = p.getString('custom_pass') ?? '';
-          _useCustom = _customConfig != null && (p.getBool('use_custom') ?? false);
-        });
-      }
+      prefs = await SharedPreferences.getInstance();
     } catch (_) {}
-    _refreshIp();
+    if (!mounted) return;
+    setState(() {
+      _settings = AppSettings(prefs);
+      _favorites = _settings.favorites;
+      _userPicked = _settings.lastHost != null;
+    });
+
+    await _initEngine(withLast: true);
+    unawaited(_refreshIp());
+
+    // Önce önbellekteki liste: uygulama anında açılsın.
+    final cached = await ServerApi.loadCached();
+    if (mounted && cached.isNotEmpty) {
+      _applyServers(cached);
+      setState(() => _loading = false);
+    }
     await _loadServers();
+  }
+
+  Future<void> _initEngine({bool withLast = false}) async {
+    try {
+      await _engine.initialize(
+        groupIdentifier: 'group.com.shadex.vpn',
+        providerBundleIdentifier: 'com.shadex.shadex_vpn.VPNExtension',
+        localizedDescription: 'ShadeX VPN',
+        lastStage: withLast ? (VPNStage stage) => _onStage(stage.name) : null,
+        lastStatus: withLast
+            ? (VpnStatus status) {
+                if (mounted) setState(() => _status = status);
+              }
+            : null,
+        showTrafficInNotification: _settings.trafficInNotification,
+        disconnectOnTaskRemoved: _settings.disconnectOnClose,
+      );
+    } catch (_) {}
   }
 
   @override
   void dispose() {
-    _startTimeout?.cancel();
+    _watchdog?.cancel();
     _ipTimer?.cancel();
     super.dispose();
   }
 
-  void _onStage(String name) {
-    if (!mounted) return;
-    final changed = name != _stageName;
+  // ------------------------------------------------------------------ sunucular
+
+  void _applyServers(List<VpnServer> list) {
+    final wanted = _selected?.hostName ?? _settings.lastHost;
+    VpnServer? pick;
+    for (final s in list) {
+      if (s.hostName == wanted) {
+        pick = s;
+        break;
+      }
+    }
     setState(() {
-      _stageName = name;
-      _starting = false;
+      _servers = list;
+      _selected = pick ?? (list.isEmpty ? null : list.first);
     });
-    if (changed && (name == 'connected' || name == 'disconnected')) {
-      _ipTimer?.cancel();
-      _ipTimer = Timer(const Duration(milliseconds: 1500), _refreshIp);
-    }
-    if (changed && _errorStages.contains(name)) {
-      _snack('${_stageTr[name] ?? name}. Başka bir sunucu dene.');
-    }
   }
 
-  // --------------------------------------------------------------------- veri
-
   Future<void> _loadServers() async {
+    if (!mounted) return;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final list = await VpnGateApi.fetchServers();
-      if (!mounted) return;
-      final wanted = _selected?.hostName ?? _prefs?.getString('last_host');
-      setState(() {
-        _servers = list;
-        _selected = list.isEmpty
-            ? null
-            : list.firstWhere(
-                (s) => s.hostName == wanted,
-                orElse: () => list.first,
-              );
-      });
+      final list = await ServerApi.fetch();
+      if (mounted) _applyServers(list);
     } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      if (mounted && _servers.isEmpty) {
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+    await _measure();
+    _maybeAutoConnect();
+  }
+
+  /// Sunuculara bu cihazdan gerçek bağlantı süresini ölçer ve
+  /// kullanıcı elle seçmediyse en hızlısını seçer.
+  Future<void> _measure() async {
+    // Tünel açıkken ölçüm VPN'in içinden yapılır ve yanıltır.
+    if (!mounted || _servers.isEmpty || !_idle || _starting || _measuring) {
+      return;
+    }
+    final list = _servers;
+    setState(() => _measuring = true);
+    await ServerApi.measureAll(list, onProgress: () {
+      if (mounted) setState(() {});
+    });
+    if (!mounted) return;
+    setState(() {
+      _measuring = false;
+      if (identical(list, _servers) && !_userPicked && !_locked) {
+        _selected = ServerApi.ranked(list).first;
+      }
+    });
+  }
+
+  void _maybeAutoConnect() {
+    if (_autoConnectDone || !_settings.autoConnect) return;
+    _autoConnectDone = true;
+    if (_idle && !_starting && _selected != null) _startConnection();
   }
 
   Future<void> _refreshIp() async {
-    if (_ipLoading) return;
+    if (_ipLoading || !mounted) return;
     setState(() => _ipLoading = true);
     final info = await IpInfo.fetch();
     if (!mounted) return;
@@ -190,68 +234,172 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  void _selectServer(VpnServer s) {
+  void _pickServer(VpnServer s) {
     setState(() {
       _selected = s;
-      _useCustom = false;
+      _userPicked = true;
     });
-    _prefs?.setString('last_host', s.hostName);
-    _prefs?.setBool('use_custom', false);
+    _settings.lastHost = s.hostName;
   }
 
-  // ----------------------------------------------------------------- bağlantı
-
-  Future<void> _toggle() async {
-    HapticFeedback.mediumImpact();
-    if (_locked) {
-      _startTimeout?.cancel();
-      setState(() => _starting = false);
-      try {
-        await _engine.disconnect();
-      } catch (_) {}
-      return;
-    }
-
-    final config = _useCustom ? _customConfig : _selected?.config;
-    if (config == null) {
-      _snack(_loading ? 'Sunucular yükleniyor, biraz bekle.' : 'Önce bir sunucu seç.');
-      return;
-    }
-
-    final name = _useCustom
-        ? 'ShadeX • Özel sunucu'
-        : 'ShadeX • ${_selected!.countryLong}';
-
-    setState(() => _starting = true);
-    _startTimeout?.cancel();
-    _startTimeout = Timer(const Duration(seconds: 30), () {
-      if (mounted && _starting) setState(() => _starting = false);
+  void _pickAuto() {
+    setState(() {
+      _userPicked = false;
+      if (_servers.isNotEmpty) _selected = ServerApi.ranked(_servers).first;
     });
+    _settings.lastHost = null;
+  }
+
+  void _toggleFavorite(String country) {
+    setState(() {
+      final f = {..._favorites};
+      if (!f.remove(country)) f.add(country);
+      _favorites = f;
+    });
+    _settings.favorites = _favorites;
+  }
+
+  // ------------------------------------------------------------------ bağlantı
+
+  void _onStage(String name) {
+    if (!mounted) return;
+    final changed = name != _stageName;
+    setState(() {
+      _stageName = name;
+      _starting = false;
+      if (name == 'connected') _note = null;
+    });
+    if (!changed) return;
+
+    if (name == 'connected') {
+      _watchdog?.cancel();
+      if (_settings.haptics) HapticFeedback.lightImpact();
+    }
+    if (name == 'no_network') _watchdog?.cancel();
+    if (name == 'denied') {
+      _watchdog?.cancel();
+      setState(() => _note = null);
+    }
+    if (name == 'connected' || name == 'disconnected') {
+      _ipTimer?.cancel();
+      _ipTimer = Timer(const Duration(milliseconds: 1200), _refreshIp);
+    }
+    if (_failureStages.contains(name)) _handleFailure();
+  }
+
+  Future<void> _onPowerTap() async {
+    if (_settings.haptics) HapticFeedback.mediumImpact();
+    if (_locked) {
+      await _disconnect(byUser: true);
+      return;
+    }
+    await _startConnection();
+  }
+
+  Future<void> _startConnection() async {
+    final target = _selected;
+    if (target == null) {
+      _snack(_loading
+          ? 'Sunucular yükleniyor, bir saniye…'
+          : 'Sunucu bulunamadı. Ayarlar\'dan listeyi yenile.');
+      return;
+    }
+    _attempt = 0;
+    _tried.clear();
+    _userCancelled = false;
+    setState(() => _note = null);
+    await _connectTo(target);
+  }
+
+  Future<void> _connectTo(VpnServer s) async {
+    if (!mounted) return;
+    _attempt++;
+    _tried.add(s.hostName);
+    setState(() {
+      _selected = s;
+      _starting = true;
+    });
+    _watchdog?.cancel();
+    _watchdog = Timer(const Duration(seconds: 16), _handleFailure);
 
     try {
       final started = await _engine.connect(
-        VpnGateApi.prepareConfig(config),
-        name,
-        username: _useCustom && _customUser.isNotEmpty ? _customUser : null,
-        password: _useCustom && _customPass.isNotEmpty ? _customPass : null,
+        ServerApi.prepareConfig(s.config),
+        'ShadeX • ${s.countryLong}',
+        username: ServerApi.username,
+        password: ServerApi.password,
       );
       if (started == false) {
+        _watchdog?.cancel();
+        if (!mounted) return;
+        setState(() {
+          _starting = false;
+          _note = null;
+        });
         _snack('VPN izni verilmedi.');
-        if (mounted) setState(() => _starting = false);
       }
-    } on PlatformException catch (e) {
-      _snack('Yapılandırma hatalı: ${e.message ?? e.code}');
-      if (mounted) setState(() => _starting = false);
-    } catch (e) {
-      _snack('Bağlanılamadı: $e');
-      if (mounted) setState(() => _starting = false);
+    } catch (_) {
+      _handleFailure();
     }
   }
 
-  void _quickConnect() {
-    if (_servers.isEmpty) return;
-    _selectServer(_servers.first);
-    _toggle();
+  /// Bağlantı kurulamadı: ayara göre sıradaki en iyi sunucuyu dener.
+  Future<void> _handleFailure() async {
+    _watchdog?.cancel();
+    if (!mounted || _userCancelled || _connected) return;
+
+    VpnServer? next;
+    if (_settings.autoSwitch && _attempt < _maxAttempts) {
+      final current = _selected;
+      final candidates = ServerApi.ranked(_servers)
+          .where((s) => !_tried.contains(s.hostName) && !s.unreachable)
+          .toList();
+      if (_userPicked && current != null) {
+        // Elle seçilen ülke varsa önce o ülkede kal.
+        for (final s in candidates) {
+          if (s.countryShort == current.countryShort) {
+            next = s;
+            break;
+          }
+        }
+      }
+      next ??= candidates.isEmpty ? null : candidates.first;
+    }
+
+    if (next == null) {
+      try {
+        await _engine.disconnect();
+      } catch (_) {}
+      if (!mounted) return;
+      setState(() {
+        _starting = false;
+        _note = null;
+      });
+      _snack('Bağlanılamadı. Başka bir ülke seçip tekrar dene.');
+      return;
+    }
+
+    setState(() {
+      _note = 'Daha hızlı sunucu deneniyor (${_attempt + 1}/$_maxAttempts)';
+      _starting = true;
+    });
+    try {
+      await _engine.disconnect();
+    } catch (_) {}
+    if (!mounted || _userCancelled) return;
+    await _connectTo(next);
+  }
+
+  Future<void> _disconnect({bool byUser = false}) async {
+    if (byUser) _userCancelled = true;
+    _watchdog?.cancel();
+    setState(() {
+      _starting = false;
+      _note = null;
+    });
+    try {
+      await _engine.disconnect();
+    } catch (_) {}
   }
 
   void _snack(String msg) {
@@ -261,50 +409,66 @@ class _HomePageState extends State<HomePage> {
       ..showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  // --------------------------------------------------------------- yardımcılar
+  Future<void> _openSettings() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SettingsPage(
+          settings: _settings,
+          onOpenSystemVpn: _openSystemVpn,
+          onRefreshServers: _loadServers,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    setState(() => _favorites = _settings.favorites);
+    await _initEngine(); // bildirim ve kapanış ayarlarını uygula
+  }
 
-  /// VpnStatus alanlarını sürümden bağımsız okur (alan yoksa null).
-  String? _statusValue(Object? Function(dynamic s) read) {
-    final s = _status;
-    if (s == null) return null;
+  Future<void> _openSystemVpn() async {
     try {
-      return read(s)?.toString();
+      final ok = await _engine.openVpnSettings();
+      if (ok == false) _snack('Android VPN ayarları açılamadı.');
     } catch (_) {
-      return null;
+      _snack('Android VPN ayarları açılamadı.');
     }
   }
 
-  static String _fmtBytes(String? v, {bool perSecond = false}) {
-    var n = double.tryParse(v ?? '') ?? 0;
+  // --------------------------------------------------------------- yardımcılar
+
+  static String _fmtBytes(num? n, {bool perSecond = false}) {
+    var v = (n ?? 0).toDouble();
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
     var i = 0;
-    while (n >= 1024 && i < units.length - 1) {
-      n /= 1024;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
       i++;
     }
-    final text = '${n.toStringAsFixed(i == 0 ? 0 : 1)} ${units[i]}';
+    final text = '${v.toStringAsFixed(i == 0 ? 0 : 1)} ${units[i]}';
     return perSecond ? '$text/s' : text;
   }
 
   String get _stageLabel {
+    if (_note != null) return _note!;
     if (_starting && _idle) return 'Bağlanıyor';
-    return _stageTr[_stageName] ?? _stageName;
+    return _stageTr[_stageName] ?? 'Bağlanıyor';
   }
 
   Color get _accent {
     if (_connected) return AppColors.green;
     if (_busy) return AppColors.amber;
-    if (_errorStages.contains(_stageName)) return AppColors.red;
+    if (_failureStages.contains(_stageName) || _stageName == 'denied') {
+      return AppColors.red;
+    }
     return AppColors.violet;
   }
 
-  // ----------------------------------------------------------------------- UI
+  // ------------------------------------------------------------------------ UI
 
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
-    final buttonSize =
-        math.min(size.width * 0.5, size.height * 0.27)
+    final buttonSize = math
+        .min(size.width * 0.5, size.height * 0.27)
         .clamp(140.0, 220.0)
         .toDouble();
     final accent = _accent;
@@ -350,7 +514,7 @@ class _HomePageState extends State<HomePage> {
                             color: accent,
                             connected: _connected,
                             busy: _busy,
-                            onTap: _toggle,
+                            onTap: _onPowerTap,
                           ),
                           const SizedBox(height: 8),
                           _timerArea(),
@@ -411,45 +575,17 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
         IconButton(
-          tooltip: 'Sunucuları yenile',
-          onPressed: _loading ? null : _loadServers,
-          icon: const Icon(Icons.refresh_rounded),
-        ),
-        PopupMenuButton<String>(
-          tooltip: 'Menü',
-          icon: const Icon(Icons.more_vert_rounded),
-          onSelected: (v) {
-            if (v == 'custom') _openCustomDialog();
-            if (v == 'about') _showAbout();
-          },
-          itemBuilder: (_) => const [
-            PopupMenuItem(
-              value: 'custom',
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.description_outlined),
-                title: Text('Kendi .ovpn dosyan'),
-              ),
-            ),
-            PopupMenuItem(
-              value: 'about',
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.info_outline_rounded),
-                title: Text('Hakkında'),
-              ),
-            ),
-          ],
+          tooltip: 'Ayarlar',
+          onPressed: _openSettings,
+          icon: const Icon(Icons.settings_rounded),
         ),
       ],
     );
   }
 
   Widget _timerArea() {
-    final duration = _statusValue((s) => s.duration);
-    final where = _useCustom
-        ? 'Özel sunucu'
-        : (_selected != null ? '${_selected!.flag} ${_selected!.countryLong}' : '');
+    final s = _selected;
+    final where = s == null ? '' : '${s.flag} ${s.countryLong}';
 
     return ConstrainedBox(
       constraints: const BoxConstraints(minHeight: 58),
@@ -461,7 +597,7 @@ class _HomePageState extends State<HomePage> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    duration ?? '00:00:00',
+                    _status?.duration ?? '00:00:00',
                     style: const TextStyle(
                       fontSize: 30,
                       fontWeight: FontWeight.w800,
@@ -526,7 +662,7 @@ class _HomePageState extends State<HomePage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  _connected ? 'Görünen IP (VPN)' : 'Gerçek IP adresin',
+                  _connected ? 'Görünen IP adresin' : 'Gerçek IP adresin',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -567,20 +703,16 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _statsRow() {
-    final byteIn = _statusValue((s) => s.byteIn);
-    final byteOut = _statusValue((s) => s.byteOut);
-    final speedIn = _statusValue((s) => s.speedIn);
-    final speedOut = _statusValue((s) => s.speedOut);
+    final st = _status;
+    final on = _connected && st != null;
     return Row(
       children: [
         Expanded(
           child: StatTile(
             icon: Icons.arrow_downward_rounded,
             label: 'İndirme',
-            value: _connected ? _fmtBytes(byteIn) : '0 B',
-            sub: _connected && speedIn != null
-                ? _fmtBytes(speedIn, perSecond: true)
-                : null,
+            value: _fmtBytes(on ? int.tryParse(st?.byteIn ?? '') : 0),
+            sub: on ? _fmtBytes(st?.speedIn, perSecond: true) : null,
             color: AppColors.cyan,
           ),
         ),
@@ -589,10 +721,8 @@ class _HomePageState extends State<HomePage> {
           child: StatTile(
             icon: Icons.arrow_upward_rounded,
             label: 'Yükleme',
-            value: _connected ? _fmtBytes(byteOut) : '0 B',
-            sub: _connected && speedOut != null
-                ? _fmtBytes(speedOut, perSecond: true)
-                : null,
+            value: _fmtBytes(on ? int.tryParse(st?.byteOut ?? '') : 0),
+            sub: on ? _fmtBytes(st?.speedOut, perSecond: true) : null,
             color: AppColors.pink,
           ),
         ),
@@ -601,26 +731,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _serverCard() {
+    final s = _selected;
     Widget leading;
     String title;
     String subtitle;
     VoidCallback? onTap;
     Widget? trailing;
 
-    if (_useCustom) {
-      leading = Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          color: Colors.white.withAlpha(16),
-          shape: BoxShape.circle,
-        ),
-        child: const Icon(Icons.description_outlined),
-      );
-      title = 'Özel sunucu';
-      subtitle = _locked ? 'Değiştirmek için bağlantıyı kes' : 'Kendi .ovpn dosyan';
-      onTap = _locked ? null : _openServerPicker;
-    } else if (_loading && _servers.isEmpty) {
+    if (s == null && _loading) {
       leading = const SizedBox(
         width: 44,
         height: 44,
@@ -629,9 +747,9 @@ class _HomePageState extends State<HomePage> {
           child: CircularProgressIndicator(strokeWidth: 2.5),
         ),
       );
-      title = 'Sunucular yükleniyor…';
-      subtitle = 'Ücretsiz VPN Gate sunucuları';
-    } else if (_servers.isEmpty || _selected == null) {
+      title = 'Sunucular hazırlanıyor…';
+      subtitle = 'Bir saniye';
+    } else if (s == null) {
       leading = Container(
         width: 44,
         height: 44,
@@ -641,17 +759,26 @@ class _HomePageState extends State<HomePage> {
         ),
         child: const Icon(Icons.cloud_off_rounded, color: AppColors.red),
       );
-      title = 'Sunucu listesi alınamadı';
-      subtitle = 'Tekrar denemek için dokun';
+      title = 'Sunuculara ulaşılamadı';
+      subtitle = _error != null
+          ? 'İnternetini kontrol et • tekrar denemek için dokun'
+          : 'Tekrar denemek için dokun';
       onTap = _loadServers;
     } else {
-      final s = _selected!;
       leading = FlagBadge(s.flag);
-      title = s.countryLong;
-      subtitle = _locked
-          ? 'Değiştirmek için bağlantıyı kes'
-          : '${s.speedText} • ${_servers.length} sunucu';
-      trailing = PingBadge(s.ping);
+      title = _userPicked ? s.countryLong : 'En hızlı sunucu';
+      if (_locked) {
+        subtitle = _userPicked
+            ? 'Değiştirmek için bağlantıyı kes'
+            : '${s.countryLong} • değiştirmek için bağlantıyı kes';
+      } else if (_measuring) {
+        subtitle = 'Hızlar ölçülüyor…';
+      } else {
+        subtitle = _userPicked
+            ? '${s.speedText} • dokun ve değiştir'
+            : '${s.countryLong} • otomatik seçildi';
+      }
+      trailing = PingBadge(s.displayPing, offline: s.unreachable);
       onTap = _locked ? null : _openServerPicker;
     }
 
@@ -699,9 +826,13 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // ----------------------------------------------------------- sunucu seçici
+  // ------------------------------------------------------------ sunucu seçici
 
-  static int _pingKey(VpnServer s) => s.ping > 0 ? s.ping : 1 << 30;
+  static int _pingKey(VpnServer s) {
+    if (s.unreachable) return 1 << 30;
+    final p = s.displayPing;
+    return p > 0 ? p : (1 << 29);
+  }
 
   void _openServerPicker() {
     if (_servers.isEmpty) {
@@ -709,8 +840,8 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     var query = '';
-    var sort = 0; // 0: önerilen, 1: en hızlı, 2: en düşük ping
-    const sortLabels = ['Önerilen', 'En hızlı', 'En düşük ping'];
+    var tab = 0; // 0 önerilen, 1 en hızlı, 2 en düşük ping, 3 favoriler
+    const tabs = ['Önerilen', 'En hızlı', 'En düşük ping', '★ Favoriler'];
 
     showModalBottomSheet<void>(
       context: context,
@@ -724,29 +855,44 @@ class _HomePageState extends State<HomePage> {
         return StatefulBuilder(
           builder: (ctx, setSheet) {
             final q = query.trim().toLowerCase();
-            final list = _servers
-                .where((s) =>
-                    q.isEmpty ||
-                    s.countryLong.toLowerCase().contains(q) ||
-                    s.countryShort.toLowerCase() == q ||
-                    s.hostName.toLowerCase().contains(q))
-                .toList();
-            if (sort == 1) {
-              list.sort((a, b) => b.speed.compareTo(a.speed));
-            } else if (sort == 2) {
-              list.sort((a, b) => _pingKey(a).compareTo(_pingKey(b)));
+            Iterable<VpnServer> src = _servers.where((s) =>
+                q.isEmpty ||
+                s.countryLong.toLowerCase().contains(q) ||
+                s.countryShort.toLowerCase() == q);
+            if (tab == 3) {
+              src = src.where((s) => _favorites.contains(s.countryShort));
+            }
+            List<VpnServer> list;
+            if (tab == 1) {
+              list = src.toList()
+                ..sort((a, b) {
+                  if (a.unreachable != b.unreachable) {
+                    return a.unreachable ? 1 : -1;
+                  }
+                  return b.speed.compareTo(a.speed);
+                });
+            } else if (tab == 2) {
+              list = src.toList()
+                ..sort((a, b) => _pingKey(a).compareTo(_pingKey(b)));
+            } else {
+              list = ServerApi.ranked(src);
             }
 
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(ctx).viewInsets.bottom,
-              ),
-              child: DraggableScrollableSheet(
-                expand: false,
-                initialChildSize: 0.85,
-                minChildSize: 0.5,
-                maxChildSize: 0.95,
-                builder: (ctx, controller) => Column(
+            void pick(VoidCallback action) {
+              action();
+              Navigator.of(sheetContext).pop();
+            }
+
+            return DraggableScrollableSheet(
+              expand: false,
+              initialChildSize: 0.85,
+              minChildSize: 0.5,
+              maxChildSize: 0.95,
+              builder: (ctx, controller) => Padding(
+                padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom,
+                ),
+                child: Column(
                   children: [
                     const SizedBox(height: 10),
                     Container(
@@ -763,7 +909,7 @@ class _HomePageState extends State<HomePage> {
                         children: [
                           const Expanded(
                             child: Text(
-                              'Sunucu seç',
+                              'Konum seç',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
@@ -772,6 +918,17 @@ class _HomePageState extends State<HomePage> {
                               ),
                             ),
                           ),
+                          if (_measuring)
+                            const Padding(
+                              padding: EdgeInsets.only(right: 8),
+                              child: SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                            ),
                           Text(
                             '${list.length} sunucu',
                             style: TextStyle(
@@ -806,12 +963,12 @@ class _HomePageState extends State<HomePage> {
                       child: ListView.separated(
                         scrollDirection: Axis.horizontal,
                         padding: const EdgeInsets.symmetric(horizontal: 16),
-                        itemCount: sortLabels.length,
+                        itemCount: tabs.length,
                         separatorBuilder: (_, __) => const SizedBox(width: 8),
                         itemBuilder: (_, i) => ChoiceChip(
-                          label: Text(sortLabels[i]),
-                          selected: sort == i,
-                          onSelected: (_) => setSheet(() => sort = i),
+                          label: Text(tabs[i]),
+                          selected: tab == i,
+                          onSelected: (_) => setSheet(() => tab = i),
                         ),
                       ),
                     ),
@@ -826,27 +983,24 @@ class _HomePageState extends State<HomePage> {
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 10),
                               child: GlassCard(
-                                highlight: AppColors.amber,
+                                highlight: _userPicked ? null : AppColors.amber,
                                 padding: const EdgeInsets.all(12),
-                                onTap: () {
-                                  Navigator.of(sheetContext).pop();
-                                  _quickConnect();
-                                },
-                                child: const Row(
+                                onTap: () => pick(_pickAuto),
+                                child: Row(
                                   children: [
-                                    Icon(
+                                    const Icon(
                                       Icons.bolt_rounded,
                                       color: AppColors.amber,
                                       size: 30,
                                     ),
-                                    SizedBox(width: 12),
-                                    Expanded(
+                                    const SizedBox(width: 12),
+                                    const Expanded(
                                       child: Column(
                                         crossAxisAlignment:
                                             CrossAxisAlignment.start,
                                         children: [
                                           Text(
-                                            'Hızlı bağlan',
+                                            'En hızlı sunucu',
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
                                             style: TextStyle(
@@ -855,7 +1009,7 @@ class _HomePageState extends State<HomePage> {
                                             ),
                                           ),
                                           Text(
-                                            'En iyi sunucuyu seçip hemen bağlanır',
+                                            'Sana en yakın ve en hızlı olanı otomatik seçer',
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
                                             style: TextStyle(
@@ -866,6 +1020,12 @@ class _HomePageState extends State<HomePage> {
                                         ],
                                       ),
                                     ),
+                                    if (!_userPicked)
+                                      const Icon(
+                                        Icons.check_circle_rounded,
+                                        color: AppColors.green,
+                                        size: 20,
+                                      ),
                                   ],
                                 ),
                               ),
@@ -873,58 +1033,72 @@ class _HomePageState extends State<HomePage> {
                           }
                           final s = list[i - 1];
                           final selected =
-                              !_useCustom && _selected?.hostName == s.hostName;
+                              _userPicked && _selected?.hostName == s.hostName;
+                          final fav = _favorites.contains(s.countryShort);
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 8),
-                            child: GlassCard(
-                              highlight: selected ? AppColors.violet : null,
-                              padding: const EdgeInsets.all(10),
-                              onTap: () {
-                                _selectServer(s);
-                                Navigator.of(sheetContext).pop();
-                              },
-                              child: Row(
-                                children: [
-                                  FlagBadge(s.flag, size: 42),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          s.countryLong,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w700,
-                                            fontSize: 15,
+                            child: Opacity(
+                              opacity: s.unreachable ? 0.5 : 1,
+                              child: GlassCard(
+                                highlight: selected ? AppColors.violet : null,
+                                padding:
+                                    const EdgeInsets.fromLTRB(10, 6, 2, 6),
+                                onTap: () => pick(() => _pickServer(s)),
+                                child: Row(
+                                  children: [
+                                    FlagBadge(s.flag, size: 42),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            s.countryLong,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w700,
+                                              fontSize: 15,
+                                            ),
                                           ),
-                                        ),
-                                        Text(
-                                          '${s.speedText} • ${s.sessions} bağlantı',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Colors.white.withAlpha(130),
+                                          Text(
+                                            '${s.speedText} • ${s.sessions} kişi',
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color:
+                                                  Colors.white.withAlpha(130),
+                                            ),
                                           ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  PingBadge(s.ping),
-                                  if (selected)
-                                    const Padding(
-                                      padding: EdgeInsets.only(left: 8),
-                                      child: Icon(
-                                        Icons.check_circle_rounded,
-                                        color: AppColors.green,
-                                        size: 20,
+                                        ],
                                       ),
                                     ),
-                                ],
+                                    const SizedBox(width: 6),
+                                    PingBadge(
+                                      s.displayPing,
+                                      offline: s.unreachable,
+                                    ),
+                                    IconButton(
+                                      tooltip: fav
+                                          ? 'Favorilerden çıkar'
+                                          : 'Favorilere ekle',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: () => setSheet(
+                                        () => _toggleFavorite(s.countryShort),
+                                      ),
+                                      icon: Icon(
+                                        fav
+                                            ? Icons.star_rounded
+                                            : Icons.star_outline_rounded,
+                                        color: fav
+                                            ? AppColors.amber
+                                            : Colors.white54,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           );
@@ -938,132 +1112,6 @@ class _HomePageState extends State<HomePage> {
           },
         );
       },
-    );
-  }
-
-  // ------------------------------------------------------------ özel .ovpn
-
-  Future<void> _openCustomDialog() async {
-    if (_locked) {
-      _snack('Önce bağlantıyı kes.');
-      return;
-    }
-    final configCtrl = TextEditingController(text: _customConfig ?? '');
-    final userCtrl = TextEditingController(text: _customUser);
-    final passCtrl = TextEditingController(text: _customPass);
-
-    final action = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        scrollable: true,
-        backgroundColor: AppColors.surface,
-        title: const Text('Kendi .ovpn dosyan'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '.ovpn dosyasını bir metin düzenleyiciyle aç, içeriğin tamamını '
-              'kopyalayıp aşağıya yapıştır.',
-              style: TextStyle(color: Colors.white.withAlpha(170), fontSize: 13),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: configCtrl,
-              minLines: 6,
-              maxLines: 10,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-              decoration: const InputDecoration(
-                hintText: 'client\ndev tun\nremote ...',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: userCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Kullanıcı adı (gerekiyorsa)',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: passCtrl,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'Şifre (gerekiyorsa)',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          if (_customConfig != null)
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, 'clear'),
-              child: const Text('Sil'),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Vazgeç'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'save'),
-            child: const Text('Kullan'),
-          ),
-        ],
-      ),
-    );
-
-    if (!mounted || action == null) return;
-    final p = _prefs;
-
-    if (action == 'clear' || configCtrl.text.trim().isEmpty) {
-      setState(() {
-        _customConfig = null;
-        _useCustom = false;
-      });
-      await p?.remove('custom_config');
-      await p?.remove('custom_user');
-      await p?.remove('custom_pass');
-      await p?.setBool('use_custom', false);
-      return;
-    }
-
-    final text = configCtrl.text.trim();
-    if (!text.contains('remote ')) {
-      _snack('Bu geçerli bir OpenVPN dosyası gibi durmuyor ("remote" satırı yok).');
-      return;
-    }
-    setState(() {
-      _customConfig = text;
-      _customUser = userCtrl.text.trim();
-      _customPass = passCtrl.text;
-      _useCustom = true;
-    });
-    await p?.setString('custom_config', text);
-    await p?.setString('custom_user', _customUser);
-    await p?.setString('custom_pass', _customPass);
-    await p?.setBool('use_custom', true);
-    _snack('Özel sunucu seçildi.');
-  }
-
-  void _showAbout() {
-    showAboutDialog(
-      context: context,
-      applicationName: 'ShadeX VPN',
-      applicationVersion: '1.0.0',
-      applicationIcon: Image.asset('assets/logo/logo.png', width: 52, height: 52),
-      children: const [
-        Text(
-          'Açık kaynaklı, ücretsiz VPN.\n\n'
-          'Sunucular, Tsukuba Üniversitesi\'nin VPN Gate projesindeki gönüllü '
-          'sunuculardır. Operatörler bağlantı kayıtlarını bir süre tuttuğu için '
-          'tam anonimlik için uygun değildir.\n\n'
-          'Bağlantı motoru: OpenVPN (ics-openvpn).',
-        ),
-      ],
     );
   }
 }

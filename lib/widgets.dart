@@ -374,21 +374,25 @@ class FlagBadge extends StatelessWidget {
   }
 }
 
-/// Ping rozeti: yeşil iyi, sarı orta, kırmızı kötü.
+/// Ping rozeti: yeşil iyi, sarı orta, kırmızı kötü; ulaşılamıyorsa "Kapalı".
 class PingBadge extends StatelessWidget {
-  const PingBadge(this.ping, {super.key});
+  const PingBadge(this.ping, {super.key, this.offline = false});
 
   final int ping;
+  final bool offline;
 
   @override
   Widget build(BuildContext context) {
-    final color = ping <= 0
-        ? Colors.white54
-        : ping < 80
-            ? AppColors.green
-            : ping < 180
-                ? AppColors.amber
-                : AppColors.red;
+    final color = offline
+        ? AppColors.red
+        : ping <= 0
+            ? Colors.white54
+            : ping < 120
+                ? AppColors.green
+                : ping < 300
+                    ? AppColors.amber
+                    : AppColors.red;
+    final text = offline ? 'Kapalı' : (ping > 0 ? '$ping ms' : '— ms');
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -396,7 +400,8 @@ class PingBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(
-        ping > 0 ? '$ping ms' : '— ms',
+        text,
+        maxLines: 1,
         style: TextStyle(
           color: color,
           fontSize: 12,

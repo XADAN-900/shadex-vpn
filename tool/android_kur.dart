@@ -119,7 +119,7 @@ void _networkSecurityConfig() {
   final f = File('android/app/src/main/res/xml/network_security_config.xml');
   f.parent.createSync(recursive: true);
   f.writeAsStringSync('''<?xml version="1.0" encoding="utf-8"?>
-<!-- VPN Gate sunucu listesi yalnızca düz HTTP üzerinden güvenilir çalışıyor. -->
+<!-- Sunucu listesi düz HTTP üzerinden de alınabilsin. -->
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">vpngate.net</domain>

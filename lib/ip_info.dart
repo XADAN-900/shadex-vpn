@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-import 'vpngate.dart';
+import 'servers.dart';
 
 /// Dış dünyaya görünen IP adresi.
 class IpInfo {
