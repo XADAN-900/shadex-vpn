@@ -152,7 +152,8 @@ class _HomePageState extends State<HomePage> {
   Future<void> _init() async {
     SharedPreferences? prefs;
     try {
-      prefs = await SharedPreferences.getInstance();
+      prefs = await SharedPreferences.getInstance()
+          .timeout(const Duration(seconds: 5));
     } catch (_) {}
     if (!mounted) return;
     setState(() {
@@ -161,11 +162,15 @@ class _HomePageState extends State<HomePage> {
       _userPicked = _settings.lastHost != null;
     });
 
-    await _initEngine(withLast: true);
+    // VPN motoru arka planda başlar; sunucu yüklemesini asla bekletmez.
+    unawaited(_initEngine(withLast: true));
     unawaited(_refreshIp());
 
     // Önce önbellekteki liste: uygulama anında açılsın.
-    final cached = await ServerApi.loadCached();
+    var cached = const <VpnServer>[];
+    try {
+      cached = await ServerApi.loadCached().timeout(const Duration(seconds: 8));
+    } catch (_) {}
     if (mounted && cached.isNotEmpty) {
       _applyServers(cached);
       setState(() => _loading = false);
@@ -191,7 +196,7 @@ class _HomePageState extends State<HomePage> {
             : null,
         showTrafficInNotification: _settings.trafficInNotification,
         disconnectOnTaskRemoved: _settings.disconnectOnClose,
-      );
+      ).timeout(const Duration(seconds: 15));
     } catch (_) {}
   }
 
@@ -230,11 +235,15 @@ class _HomePageState extends State<HomePage> {
       _error = null;
     });
     try {
-      final list = await ServerApi.fetch();
+      // Ne olursa olsun en geç 45 saniyede ya liste gelir ya hata gösterilir.
+      final list =
+          await ServerApi.fetch().timeout(const Duration(seconds: 45));
       if (mounted) _applyServers(list);
     } catch (e) {
       if (mounted && _servers.isEmpty) {
-        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+        setState(() => _error = e is TimeoutException
+            ? 'timeout'
+            : e.toString().replaceFirst('Exception: ', ''));
       }
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -570,8 +579,11 @@ class _HomePageState extends State<HomePage> {
   /// Adayları bağlanmadan hemen önce yeniden kontrol eder ve gerçekten
   /// cevap veren ilk sunucuyu döner. Önce ilk aday tek başına (hızlı yol),
   /// olmazsa sıradakiler 5'erli gruplar hâlinde paralel denenir.
+  /// Hiçbiri VPN cevabı vermezse, kapısı açık olan ilk sunucu yine de
+  /// denenir (ağ kontrolü engelliyor olabilir); hepsi kapalıysa null.
   Future<VpnServer?> _verifyFirst(List<VpnServer> candidates) async {
     if (candidates.isEmpty) return null;
+    VpnServer? portOpen;
     var i = 0;
     while (i < candidates.length && i < 21) {
       if (!mounted || _userCancelled) return null;
@@ -582,8 +594,13 @@ class _HomePageState extends State<HomePage> {
       _tick();
       for (final c in batch) {
         if (c.reachable) return c;
+        if (c.latency == -3) portOpen ??= c;
         _tried.add(c.hostName); // bu sefer tekrar denenmesin
       }
+    }
+    if (portOpen != null) {
+      _tried.remove(portOpen.hostName);
+      return portOpen;
     }
     return null;
   }
@@ -1086,7 +1103,10 @@ class _HomePageState extends State<HomePage> {
         child: const Icon(Icons.cloud_off_rounded, color: AppColors.red),
       );
       title = tr('servers_unreachable');
-      subtitle = tr('check_internet_retry');
+      final reason = _error;
+      subtitle = reason == null
+          ? tr('check_internet_retry')
+          : '${tr('check_internet_retry')} ($reason)';
       onTap = _loadServers;
     } else {
       leading = FlagBadge(s.flag);

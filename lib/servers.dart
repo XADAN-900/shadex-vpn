@@ -94,7 +94,7 @@ class ServerApi {
       final f = await _cacheFile();
       if (!await f.exists()) return [];
       final body = await f.readAsString();
-      return compute(parse, body);
+      return await compute(parse, body);
     } catch (_) {
       return [];
     }
@@ -107,13 +107,14 @@ class ServerApi {
       try {
         final res = await http
             .get(Uri.parse(url))
-            .timeout(const Duration(seconds: 20));
+            .timeout(const Duration(seconds: 15));
         if (res.statusCode != 200) {
           lastError = 'HTTP ${res.statusCode}';
           continue;
         }
         final body = utf8.decode(res.bodyBytes, allowMalformed: true);
-        final list = await compute(parse, body);
+        final list =
+            await compute(parse, body).timeout(const Duration(seconds: 15));
         if (list.isNotEmpty) {
           unawaited(_writeCache(body));
           return list;
@@ -325,8 +326,8 @@ class ServerApi {
     } catch (_) {
       return -3;
     } finally {
-      await sub?.cancel();
       socket.destroy();
+      sub?.cancel(); // beklenmez: takılırsa ölçüm durmasın
     }
   }
 
@@ -390,7 +391,9 @@ class ServerApi {
       if (shouldStop?.call() ?? false) return;
       final batch = servers.skip(i).take(parallel);
       await Future.wait(batch.map((s) async {
-        final r = await measure(s);
+        // Her ölçüm en geç 6 sn'de biter; hiçbir şey listeyi bekletemez.
+        final r = await measure(s)
+            .timeout(const Duration(seconds: 6), onTimeout: () => -1);
         s.checkedAt = DateTime.now();
         // Tünel içinden ölçerken süreler yanıltıcıdır: yalnızca çalışıp
         // çalışmadığını güncelle, eski süreyi koru.

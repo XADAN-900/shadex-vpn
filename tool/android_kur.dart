@@ -16,6 +16,7 @@ void main() {
   _networkSecurityConfig();
   _proguard();
   _notificationResources();
+  _nativeKeepAlive();
   stdout.writeln('✓ Android ayarları tamam.');
 }
 
@@ -55,12 +56,12 @@ void _manifest() {
     'android:label="ShadeX VPN"',
   );
 
-  // flutter_foreground_task servisi (Android 14+ tür bildirimi zorunlu).
-  if (!s.contains('com.pravera.flutter_foreground_task.service.ForegroundService')) {
+  // Uygulamanın kendi arka plan servisi (Android 14+ tür bildirimi zorunlu).
+  if (!s.contains('.KeepAliveService')) {
     s = s.replaceFirst(
       '</application>',
       '    <service\n'
-      '            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"\n'
+      '            android:name=".KeepAliveService"\n'
       '            android:foregroundServiceType="dataSync"\n'
       '            android:stopWithTask="true"\n'
       '            android:exported="false" />\n'
@@ -184,4 +185,164 @@ void _notificationResources() {
         '</resources>\n');
   });
   stdout.writeln('  • bildirim ikonu ve metni');
+}
+
+/// MainActivity'ye "shadex/keepalive" kanalını ekler ve hafif bir ön plan
+/// servisi yazar. İkinci bir Flutter motoru açılmaz.
+void _nativeKeepAlive() {
+  final roots = [
+    Directory('android/app/src/main/kotlin'),
+    Directory('android/app/src/main/java'),
+  ];
+  File? activity;
+  for (final r in roots) {
+    if (!r.existsSync()) continue;
+    for (final e in r.listSync(recursive: true)) {
+      if (e is File && e.path.endsWith('MainActivity.kt')) activity = e;
+    }
+  }
+  if (activity == null) {
+    stderr.writeln('MainActivity.kt bulunamadı.');
+    exit(1);
+  }
+  final pkg = RegExp(r'^package\s+([\w.]+)', multiLine: true)
+      .firstMatch(activity.readAsStringSync())
+      ?.group(1);
+  if (pkg == null) {
+    stderr.writeln('MainActivity paket adı okunamadı.');
+    exit(1);
+  }
+
+  activity.writeAsStringSync('''package $pkg
+
+import android.content.Intent
+import android.os.Build
+import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+
+class MainActivity : FlutterActivity() {
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "shadex/keepalive")
+            .setMethodCallHandler { call, result ->
+                try {
+                    val text = call.argument<String>("text") ?: "ShadeX VPN"
+                    when (call.method) {
+                        "start" -> {
+                            val intent = Intent(this, KeepAliveService::class.java)
+                                .putExtra(KeepAliveService.EXTRA_TEXT, text)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                startForegroundService(intent)
+                            } else {
+                                startService(intent)
+                            }
+                            result.success(true)
+                        }
+                        "update" -> {
+                            KeepAliveService.update(this, text)
+                            result.success(true)
+                        }
+                        "stop" -> {
+                            stopService(Intent(this, KeepAliveService::class.java))
+                            result.success(true)
+                        }
+                        else -> result.notImplemented()
+                    }
+                } catch (e: Exception) {
+                    result.success(false)
+                }
+            }
+    }
+}
+''');
+
+  File('${activity.parent.path}/KeepAliveService.kt').writeAsStringSync('''package $pkg
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.IBinder
+
+/// Sunucu hazırlığı ve bağlanma sırasında uygulamanın arka planda
+/// dondurulmaması için sessiz bildirimli ön plan servisi.
+class KeepAliveService : Service() {
+    companion object {
+        const val CHANNEL_ID = "shadex_work"
+        const val NOTIFICATION_ID = 7301
+        const val EXTRA_TEXT = "text"
+
+        fun build(context: Context, text: String): Notification {
+            val manager =
+                context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                manager.createNotificationChannel(
+                    NotificationChannel(CHANNEL_ID, "ShadeX", NotificationManager.IMPORTANCE_LOW)
+                )
+            }
+            val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            @Suppress("DEPRECATION")
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(context, CHANNEL_ID)
+            } else {
+                Notification.Builder(context)
+            }
+            builder
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("ShadeX VPN")
+                .setContentText(text)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+            if (launch != null) {
+                builder.setContentIntent(PendingIntent.getActivity(context, 0, launch, flags))
+            }
+            return builder.build()
+        }
+
+        fun update(context: Context, text: String) {
+            val manager =
+                context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(NOTIFICATION_ID, build(context, text))
+        }
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val text = intent?.getStringExtra(EXTRA_TEXT) ?: "ShadeX VPN"
+        try {
+            val notification = build(this, text)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            stopSelf()
+        }
+        return START_NOT_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+}
+''');
+  stdout.writeln('  • arka plan servisi (KeepAliveService)');
 }
