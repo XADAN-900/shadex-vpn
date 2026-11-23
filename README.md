@@ -20,7 +20,7 @@
 - **Ayarlar:** açılışta otomatik bağlan, akıllı sunucu değiştirme, kapatınca bağlantıyı kes, bildirimde hız, titreşim, Kill Switch kısayolu.
 - **Hızlı açılış:** sunucu listesi önbellekten anında gelir, arka planda güncellenir.
 - **Hızlı DNS:** siteler daha hızlı açılır, DNS sızıntısı önlenir (ayarlardan kapatılabilir).
-- **7 dil:** Türkçe, English, Français, Español, Português, Русский, العربية (sağdan sola destekli). Uygulama İngilizce açılır, dil Ayarlar'dan seçilir.
+- **7 dil:** Türkçe, English, Français, Español, Português, Русский, العربية (sağdan sola destekli). Uygulama telefonun dilinde açılır; desteklenmeyen dillerde İngilizce.
 - **Taşma yok:** ana ekran kaymaz, her ekran boyutuna kendini sığdırır; büyük yazı boyutunda düzen bozulmaz.
 
 ## APK

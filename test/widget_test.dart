@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ui' show Locale;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadex_vpn/l10n.dart';
@@ -53,19 +54,22 @@ void main() {
     expect(ranked.last.countryShort, 'KR');
   });
 
-  test('7 dilin hepsinde metinler dolu', () {
+  test('dil telefonun diline göre seçilir', () {
     for (final c in L10n.codes) {
-      L10n.preference.value = c;
+      expect(L10n.resolve(Locale(c, 'XX')).languageCode, c);
       expect(L10n.code, c);
       expect(tr('btn_connect').isNotEmpty, isTrue);
       expect(tr('trying_next', {'n': 2, 'max': 4}).contains('2/4'), isTrue);
-      expect(tr('olmayan_anahtar'), 'olmayan_anahtar');
     }
-    L10n.preference.value = null;
-    expect(L10n.code, 'en'); // ilk açılış İngilizce
-    L10n.preference.value = 'system'; // eski sürümden kalan değer
-    expect(L10n.code, 'en');
-    L10n.preference.value = null;
+    // Desteklenmeyen dil (Almanca) ve dil yoksa İngilizce.
+    expect(L10n.resolve(const Locale('de')).languageCode, 'en');
+    expect(L10n.resolve(null).languageCode, 'en');
+    // Önce Almanca sonra Türkçe tanımlı telefon: Türkçe.
+    expect(
+      L10n.resolveList(const [Locale('de'), Locale('tr')]).languageCode,
+      'tr',
+    );
+    expect(tr('olmayan_anahtar'), 'olmayan_anahtar');
   });
 
   test('hızlı DNS ayardan kapatılabilir', () {

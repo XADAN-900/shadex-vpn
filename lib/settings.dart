@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'l10n.dart';
 import 'theme.dart';
 
-const appVersion = '1.2.2';
+const appVersion = '1.3.0';
 const shareLink =
     'https://github.com/XADAN-900/shadex-vpn/releases/latest/download/ShadeX-VPN.apk';
 
@@ -41,16 +41,6 @@ class AppSettings {
   /// Titreşimli geri bildirim.
   bool get haptics => _get('haptics', true);
   set haptics(bool v) => _set('haptics', v);
-
-  /// Dil kodu; null = varsayılan (İngilizce).
-  String? get language => _p?.getString('language');
-  set language(String? v) {
-    if (v == null) {
-      _p?.remove('language');
-    } else {
-      _p?.setString('language', v);
-    }
-  }
 
   /// Favori ülke kodları.
   Set<String> get favorites =>
@@ -156,33 +146,6 @@ class _SettingsPageState extends State<SettingsPage> {
       ..showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  Future<void> _chooseLanguage() async {
-    final current = L10n.code;
-    final picked = await showDialog<String>(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        backgroundColor: AppColors.surface,
-        title: Text(tr('language')),
-        children: [
-          for (final code in ['en', ...L10n.codes.where((c) => c != 'en')])
-            ListTile(
-              title: Text(L10n.names[code]!),
-              trailing: current == code
-                  ? const Icon(
-                      Icons.check_circle_rounded,
-                      color: AppColors.green,
-                    )
-                  : null,
-              onTap: () => Navigator.pop(ctx, code),
-            ),
-        ],
-      ),
-    );
-    if (picked == null) return;
-    s.language = picked;
-    L10n.preference.value = picked;
-  }
-
   @override
   Widget build(BuildContext context) {
     L10n.watch(context);
@@ -199,15 +162,6 @@ class _SettingsPageState extends State<SettingsPage> {
       body: ListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: [
-          _section(tr('sec_general')),
-          _card([
-            _tile(
-              icon: Icons.translate_rounded,
-              title: tr('language'),
-              subtitle: L10n.names[L10n.code],
-              onTap: _chooseLanguage,
-            ),
-          ]),
           _section(tr('sec_connection')),
           _card([
             _switch(

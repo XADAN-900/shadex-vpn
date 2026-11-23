@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'home_page.dart';
 import 'l10n.dart';
@@ -10,10 +9,6 @@ import 'theme.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    L10n.preference.value = prefs.getString('language');
-  } catch (_) {}
   runApp(const ShadeXApp());
 }
 
@@ -22,14 +17,14 @@ class ShadeXApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<String?>(
-      valueListenable: L10n.preference,
-      builder: (context, _, __) => MaterialApp(
+    return MaterialApp(
         title: 'ShadeX VPN',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),
-        locale: L10n.locale,
+        // Dil telefonun diline göre seçilir; desteklenmiyorsa İngilizce.
         supportedLocales: L10n.codes.map(Locale.new).toList(),
+        localeListResolutionCallback: (locales, supported) =>
+            L10n.resolveList(locales),
         localizationsDelegates: const [
           GlobalMaterialLocalizations.delegate,
           GlobalWidgetsLocalizations.delegate,
@@ -49,7 +44,6 @@ class ShadeXApp extends StatelessWidget {
           );
         },
         home: const HomePage(),
-      ),
     );
   }
 }

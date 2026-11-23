@@ -13,18 +13,28 @@ class L10n {
     'ar': 'العربية',
   };
 
-  /// Varsayılan dil: uygulama ilk açılışta İngilizce başlar.
-  static const defaultCode = 'en';
+  /// Telefonun dili desteklenmiyorsa kullanılacak dil.
+  static const fallbackCode = 'en';
 
-  /// Seçili dil kodu; null ya da bilinmeyen kod = varsayılan (İngilizce).
-  static final ValueNotifier<String?> preference = ValueNotifier(null);
-
-  static String get code {
-    final p = preference.value;
-    return p != null && codes.contains(p) ? p : defaultCode;
-  }
+  /// Şu an kullanılan dil. Telefonun diline göre otomatik belirlenir.
+  static String code = fallbackCode;
 
   static Locale get locale => Locale(code);
+
+  /// Telefonun dilinden uygulama dilini seçer.
+  static Locale resolve(Locale? device) => resolveList([if (device != null) device]);
+
+  /// Telefonun dil listesinden ilk desteklenen dili seçer (MaterialApp çağırır).
+  static Locale resolveList(List<Locale>? device) {
+    code = fallbackCode;
+    for (final l in device ?? const <Locale>[]) {
+      if (codes.contains(l.languageCode)) {
+        code = l.languageCode;
+        break;
+      }
+    }
+    return Locale(code);
+  }
 
   /// Dil değişince yeniden çizilmek için build içinde çağrılır.
   static void watch(BuildContext context) => Localizations.localeOf(context);
