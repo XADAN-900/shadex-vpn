@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ip_info.dart';
+import 'keep_alive.dart';
 import 'l10n.dart';
 import 'servers.dart';
 import 'settings.dart';
@@ -99,6 +100,7 @@ class _HomePageState extends State<HomePage> {
   bool _loading = true;
   bool _measuring = false;
   bool _bgMeasuring = false;
+  bool _prepping = false; // ilk hazırlık (arka planda da sürmeli)
   String? _error;
   Set<String> _favorites = {};
 
@@ -113,6 +115,26 @@ class _HomePageState extends State<HomePage> {
   bool get _locked => _connected || _busy;
 
   // ------------------------------------------------------------ yaşam döngüsü
+
+  /// Her durum değişikliğinde arka plan servisinin gerekip gerekmediğine bakılır.
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _syncKeepAlive();
+  }
+
+  /// Hazırlık ya da bağlanma sürüyorsa uygulama arka planda donmasın.
+  /// Bağlıyken VPN servisi zaten uygulamayı ayakta tutar.
+  void _syncKeepAlive() {
+    final connecting = _busy && !_connected;
+    if (connecting) {
+      KeepAlive.start(_note ?? tr('st_connecting'));
+    } else if (_prepping && !_connected) {
+      KeepAlive.start(tr('servers_preparing'));
+    } else {
+      KeepAlive.stop();
+    }
+  }
 
   @override
   void initState() {
@@ -178,6 +200,7 @@ class _HomePageState extends State<HomePage> {
     _watchdog?.cancel();
     _ipTimer?.cancel();
     _recheckTimer?.cancel();
+    KeepAlive.stop();
     _serversTick.dispose();
     super.dispose();
   }
@@ -203,6 +226,7 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     setState(() {
       _loading = true;
+      _prepping = true;
       _error = null;
     });
     try {
@@ -216,6 +240,7 @@ class _HomePageState extends State<HomePage> {
       if (mounted) setState(() => _loading = false);
     }
     await _measure();
+    if (mounted) setState(() => _prepping = false);
     _maybeAutoConnect();
   }
 

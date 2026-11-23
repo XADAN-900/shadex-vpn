@@ -17,6 +17,7 @@
 - **Hız testi:** bağlanınca tünelin gerçek hızını ölçüp gösterir; otomatik seçilen sunucu çok yavaşsa daha hızlısına kendiliğinden geçer.
 - **Canlı sunucu değiştirme:** bağlıyken başka ülke seç, bağlantıyı kesmeden geçsin.
 - **Yalnızca çalışan sunucular:** her sunucuya gerçek VPN el sıkışması denenir; cevap vermeyenler listede hiç görünmez. Liste 2 dakikada bir arka planda yenilenir, bağlanmadan hemen önce seçilen sunucu yeniden doğrulanır.
+- **Arka planda da çalışır:** uygulamayı arka plana alsan da sunucu hazırlama ve bağlanma devam eder (bu sırada sessiz bir bildirim görünür).
 - **Seçtiğin ülkede kalır:** elle seçilen ülkede bir sunucu çalışmazsa yalnızca o ülkenin diğer sunucuları denenir.
 - **Tek dokunuş:** büyük bağlan düğmesi; bağlıyken nabız animasyonu, süre sayacı, indirme ve yükleme miktarı ile hızı.
 - **Konum seçici:** ülke arama; *Önerilen / En hızlı / En düşük ping / Favoriler* sekmeleri; renkli ping rozetleri; favori ülkeler.

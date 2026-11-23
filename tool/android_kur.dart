@@ -27,6 +27,10 @@ void _manifest() {
     'android.permission.INTERNET',
     'android.permission.ACCESS_NETWORK_STATE',
     'android.permission.POST_NOTIFICATIONS',
+    // Arka planda hazırlık/bağlanma sürsün diye ön plan servisi.
+    'android.permission.FOREGROUND_SERVICE',
+    'android.permission.FOREGROUND_SERVICE_DATA_SYNC',
+    'android.permission.WAKE_LOCK',
   ];
   final missing = perms.where((p) => !s.contains('"$p"')).toList();
   if (missing.isNotEmpty) {
@@ -50,6 +54,19 @@ void _manifest() {
     RegExp(r'android:label="[^"]*"'),
     'android:label="ShadeX VPN"',
   );
+
+  // flutter_foreground_task servisi (Android 14+ tür bildirimi zorunlu).
+  if (!s.contains('com.pravera.flutter_foreground_task.service.ForegroundService')) {
+    s = s.replaceFirst(
+      '</application>',
+      '    <service\n'
+      '            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"\n'
+      '            android:foregroundServiceType="dataSync"\n'
+      '            android:stopWithTask="true"\n'
+      '            android:exported="false" />\n'
+      '    </application>',
+    );
+  }
   f.writeAsStringSync(s);
   stdout.writeln('  • AndroidManifest.xml');
 }
