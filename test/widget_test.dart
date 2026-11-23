@@ -93,4 +93,32 @@ void main() {
     expect(list[0].latency, isNotNull);
     expect(list[1].latency, isNull);
   });
+
+  test('VPN el sıkışma paketi doğru biçimde', () {
+    final p = ServerApi.hardResetPacket();
+    expect(p.length, 14); // başlık + 8 oturum + 1 onay + 4 paket no
+    expect(p[0], 0x38); // P_CONTROL_HARD_RESET_CLIENT_V2, key 0
+    expect(p[9], 0); // onay yok
+    expect(p.sublist(10), [0, 0, 0, 0]);
+    expect(ServerApi.isServerReset(0x40), isTrue); // SERVER_V2
+    expect(ServerApi.isServerReset(0x38), isFalse);
+  });
+
+  test('hiçbir sunucu el sıkışmazsa kapısı açıklarla devam edilir', () {
+    final list = ServerApi.parse(body);
+    list[0]
+      ..latency = -3
+      ..tcpLatency = 120;
+    list[1].latency = -1;
+    expect(list[0].unreachable, isTrue);
+    ServerApi.applyFallback(list);
+    expect(list[0].reachable, isTrue);
+    expect(list[0].latency, 120);
+    expect(list[1].unreachable, isTrue);
+    ServerApi.handshakeCheck = true; // diğer testleri etkilemesin
+  });
+
+  test('tls-auth kullanan sunucu tanınır', () {
+    expect(ServerApi.parse(body).first.tlsAuth, isFalse);
+  });
 }

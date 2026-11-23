@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'l10n.dart';
 import 'theme.dart';
 
-const appVersion = '1.4.0';
+const appVersion = '1.5.0';
 const shareLink =
     'https://github.com/XADAN-900/shadex-vpn/releases/latest/download/ShadeX-VPN.apk';
 

@@ -54,7 +54,7 @@ const _idleStages = {
 const _failureStages = {'error', 'auth_failed'};
 
 /// Bağlantı kurulamazsa en fazla kaç sunucu denensin.
-const _maxAttempts = 4;
+const _maxAttempts = 5;
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -79,6 +79,12 @@ class _HomePageState extends State<HomePage> {
   bool _autoConnectDone = false;
   bool _notifAsked = false;
   String? _activeHost;
+  String? _lockCountry; // elle seçilen ülke: yedekler bu ülkeden
+  bool _failing = false;
+  bool _switching = false;
+  Timer? _recheckTimer;
+  DateTime? _lastFullCheck;
+  final ValueNotifier<int> _serversTick = ValueNotifier(0);
 
   // Tünel içi hız testi
   double? _speedMbps;
@@ -142,6 +148,10 @@ class _HomePageState extends State<HomePage> {
       _applyServers(cached);
       setState(() => _loading = false);
     }
+    _recheckTimer = Timer.periodic(
+      const Duration(minutes: 2),
+      (_) => _recheck(),
+    );
     await _loadServers();
   }
 
@@ -167,6 +177,8 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _watchdog?.cancel();
     _ipTimer?.cancel();
+    _recheckTimer?.cancel();
+    _serversTick.dispose();
     super.dispose();
   }
 
@@ -207,11 +219,18 @@ class _HomePageState extends State<HomePage> {
     _maybeAutoConnect();
   }
 
-  /// Sunuculara bu cihazdan gerçek bağlantı süresini ölçer. Önce en iyi
-  /// 60 sunucu ölçülür ve kullanıcı elle seçmediyse en iyisi seçilir;
-  /// kalanlar arka planda ölçülür. Kapalı çıkanlar listeden gizlenir.
+  /// Liste değişti: ana ekranı ve açık seçiciyi yeniden çiz.
+  void _tick() {
+    if (!mounted) return;
+    setState(() {});
+    _serversTick.value++;
+  }
+
+  /// Sunucuları bu cihazdan gerçek VPN el sıkışmasıyla kontrol eder.
+  /// Önce en iyi 60 sunucu (en iyisi hemen seçilir), sonra kalanlar
+  /// arka planda. Cevap vermeyenler listeden gizlenir.
   Future<void> _measure() async {
-    // Tünel açıkken ölçüm VPN'in içinden yapılır ve yanıltır.
+    // Tünel açıkken ilk ölçüm yapılmaz; periyodik kontrol halleder.
     if (!mounted ||
         _servers.isEmpty ||
         !_idle ||
@@ -222,32 +241,65 @@ class _HomePageState extends State<HomePage> {
     }
     final list = _servers;
     bool stop() => !mounted || !identical(list, _servers) || !_idle || _starting;
-    void tick() {
-      if (mounted) setState(() {});
-    }
 
     setState(() => _measuring = true);
     const firstBatch = 60;
     await ServerApi.measureAll(
       list.take(firstBatch).toList(),
-      onProgress: tick,
+      onProgress: _tick,
       shouldStop: stop,
     );
     if (!mounted) return;
+    ServerApi.applyFallback(list);
     if (identical(list, _servers) && !_userPicked && !_locked) {
       _selected = ServerApi.ranked(list).first;
     }
     setState(() => _measuring = false);
+    _tick();
     if (list.length > firstBatch) {
       _bgMeasuring = true;
       await ServerApi.measureAll(
         list.sublist(firstBatch),
-        onProgress: tick,
+        onProgress: _tick,
         shouldStop: stop,
       );
       _bgMeasuring = false;
     }
+    _lastFullCheck = DateTime.now();
   }
+
+  /// Arka planda sürekli kontrol: tüm sunucular yeniden denenir. Bağlıyken
+  /// de çalışır; o zaman yalnızca hangilerinin çalıştığı güncellenir.
+  Future<void> _recheck() async {
+    if (!mounted ||
+        _servers.isEmpty ||
+        _measuring ||
+        _bgMeasuring ||
+        _busy ||
+        _failing) {
+      return;
+    }
+    final list = _servers;
+    final viaTunnel = _connected;
+    _bgMeasuring = true;
+    _tick();
+    await ServerApi.measureAll(
+      list,
+      onProgress: _tick,
+      keepLatency: viaTunnel,
+      shouldStop: () =>
+          !mounted || !identical(list, _servers) || _busy || _failing,
+    );
+    _bgMeasuring = false;
+    _lastFullCheck = DateTime.now();
+    if (!mounted) return;
+    if (!viaTunnel && !_userPicked && !_locked) {
+      _selected = ServerApi.ranked(list).first;
+    }
+    _tick();
+  }
+
+  int get _readyCount => _servers.where((s) => s.reachable).length;
 
   void _maybeAutoConnect() {
     if (_autoConnectDone || !_settings.autoConnect) return;
@@ -309,8 +361,18 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  /// Açık bağlantıyı kapatıp [s] sunucusuna geçer.
+  /// Açık bağlantıyı kapatıp [s] sunucusuna (ya da aynı ülkede çalışan
+  /// başka birine) geçer.
   Future<void> _switchTo(VpnServer s, {bool keepAttempts = false}) async {
+    _switching = true;
+    try {
+      await _switchToInner(s, keepAttempts: keepAttempts);
+    } finally {
+      _switching = false;
+    }
+  }
+
+  Future<void> _switchToInner(VpnServer s, {bool keepAttempts = false}) async {
     if (_settings.haptics) HapticFeedback.selectionClick();
     _watchdog?.cancel();
     _userCancelled = true; // süren denemeler dursun
@@ -330,8 +392,15 @@ class _HomePageState extends State<HomePage> {
       _tried.clear();
     }
     _userCancelled = false;
+    _lockCountry = _userPicked ? s.countryShort : null;
     setState(() => _note = tr('switching'));
-    await _connectTo(s);
+    final server = await _verifyFirst(_candidates(first: s));
+    if (!mounted || _userCancelled) return;
+    if (server == null) {
+      await _giveUp(s);
+      return;
+    }
+    await _connectTo(server);
   }
 
   /// Bağlanınca tünelden kısa bir hız testi yapar. Sunucu otomatik
@@ -393,7 +462,10 @@ class _HomePageState extends State<HomePage> {
     final changed = name != _stageName;
     setState(() {
       _stageName = name;
-      _starting = false;
+      // Geçiş sırasında eski tünelin kapanması "bağlanıyor" durumunu bozmasın.
+      if (name == 'connected' || (!_failing && !_switching)) {
+        _starting = false;
+      }
       if (name == 'connected') _note = null;
       if (changed && name != 'connected') {
         _speedToken++;
@@ -435,9 +507,77 @@ class _HomePageState extends State<HomePage> {
     _attempt = 0;
     _tried.clear();
     _userCancelled = false;
-    setState(() => _note = null);
+    _lockCountry = _userPicked ? target.countryShort : null;
+    setState(() {
+      _note = tr('finding_server');
+      _starting = true;
+    });
     await _askNotificationPermission();
-    await _connectTo(target);
+    final server = await _verifyFirst(_candidates(first: target));
+    if (!mounted || _userCancelled) return;
+    if (server == null) {
+      _giveUp(target);
+      return;
+    }
+    await _connectTo(server);
+  }
+
+  /// Bağlanılabilecek adaylar: kapalı ve denenmiş olanlar hariç, en iyiden
+  /// kötüye. Ülke elle seçildiyse yalnızca o ülke.
+  List<VpnServer> _candidates({VpnServer? first}) {
+    final lock = _lockCountry;
+    final list = ServerApi.ranked(_servers)
+        .where((s) =>
+            !s.unreachable &&
+            !_tried.contains(s.hostName) &&
+            (lock == null || s.countryShort == lock))
+        .toList();
+    if (first != null &&
+        !first.unreachable &&
+        !_tried.contains(first.hostName)) {
+      list
+        ..remove(first)
+        ..insert(0, first);
+    }
+    return list;
+  }
+
+  /// Adayları bağlanmadan hemen önce yeniden kontrol eder ve gerçekten
+  /// cevap veren ilk sunucuyu döner. Önce ilk aday tek başına (hızlı yol),
+  /// olmazsa sıradakiler 5'erli gruplar hâlinde paralel denenir.
+  Future<VpnServer?> _verifyFirst(List<VpnServer> candidates) async {
+    if (candidates.isEmpty) return null;
+    var i = 0;
+    while (i < candidates.length && i < 21) {
+      if (!mounted || _userCancelled) return null;
+      final size = i == 0 ? 1 : 5;
+      final batch = candidates.skip(i).take(size).toList();
+      i += size;
+      await ServerApi.measureAll(batch, parallel: size);
+      _tick();
+      for (final c in batch) {
+        if (c.reachable) return c;
+        _tried.add(c.hostName); // bu sefer tekrar denenmesin
+      }
+    }
+    return null;
+  }
+
+  /// Uygun sunucu kalmadı: bağlantıyı bırak ve kullanıcıya söyle.
+  Future<void> _giveUp(VpnServer? last) async {
+    _watchdog?.cancel();
+    try {
+      await _engine.disconnect();
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _starting = false;
+      _note = null;
+    });
+    final lock = _lockCountry;
+    _snack(lock != null && last != null
+        ? tr('country_failed', {'c': last.countryLong})
+        : tr('snack_failed'));
   }
 
   /// Android 13+: bağlantı bildirimi görünsün diye bir kez izin ister.
@@ -483,57 +623,46 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  /// Bağlantı kurulamadı: ayara göre sıradaki en iyi sunucuyu dener.
+  /// Bağlantı kurulamadı: başarısız sunucuyu listeden düşürür, ayara göre
+  /// (seçilen ülkenin içinde kalarak) doğrulanmış sıradaki sunucuyu dener.
   Future<void> _handleFailure() async {
     _watchdog?.cancel();
-    if (!mounted || _userCancelled || _connected) return;
+    if (!mounted || _userCancelled || _connected || _failing) return;
+    _failing = true;
+    try {
+      final failed = _selected;
+      if (failed != null) failed.latency = -1; // şu an çalışmıyor
+      _tick();
 
-    VpnServer? next;
-    if (_settings.autoSwitch && _attempt < _maxAttempts) {
-      final current = _selected;
-      final candidates = ServerApi.ranked(_servers)
-          .where((s) => !_tried.contains(s.hostName) && !s.unreachable)
-          .toList();
-      if (_userPicked && current != null) {
-        // Elle seçilen ülke varsa önce o ülkede kal.
-        for (final s in candidates) {
-          if (s.countryShort == current.countryShort) {
-            next = s;
-            break;
-          }
-        }
+      if (!_settings.autoSwitch || _attempt >= _maxAttempts) {
+        await _giveUp(failed);
+        return;
       }
-      next ??= candidates.isEmpty ? null : candidates.first;
-    }
-
-    if (next == null) {
+      setState(() {
+        _note = tr('trying_next', {'n': _attempt + 1, 'max': _maxAttempts});
+        _starting = true;
+      });
       try {
         await _engine.disconnect();
       } catch (_) {}
-      if (!mounted) return;
-      setState(() {
-        _starting = false;
-        _note = null;
-      });
-      _snack(tr('snack_failed'));
-      return;
+      if (!mounted || _userCancelled) return;
+      final next = await _verifyFirst(_candidates());
+      if (!mounted || _userCancelled) return;
+      if (next == null) {
+        await _giveUp(failed);
+        return;
+      }
+      await _connectTo(next);
+    } finally {
+      _failing = false;
     }
-
-    setState(() {
-      _note = tr('trying_next', {'n': _attempt + 1, 'max': _maxAttempts});
-      _starting = true;
-    });
-    try {
-      await _engine.disconnect();
-    } catch (_) {}
-    if (!mounted || _userCancelled) return;
-    await _connectTo(next);
   }
 
   Future<void> _disconnect({bool byUser = false}) async {
     if (byUser) {
       _userCancelled = true;
       _activeHost = null;
+      _lockCountry = null;
     }
     _watchdog?.cancel();
     setState(() {
@@ -947,7 +1076,8 @@ class _HomePageState extends State<HomePage> {
       } else if (_busy) {
         subtitle = s.countryLong;
       } else if (_measuring) {
-        subtitle = tr('measuring');
+        final n = _readyCount;
+        subtitle = n > 0 ? tr('n_ready', {'n': n}) : tr('checking_list');
       } else {
         subtitle = _userPicked
             ? '${s.speedText} • ${tr('tap_to_change')}'
@@ -1027,6 +1157,10 @@ class _HomePageState extends State<HomePage> {
       _loadServers();
       return;
     }
+    final last = _lastFullCheck;
+    if (last == null || DateTime.now().difference(last).inSeconds > 60) {
+      _recheck(); // seçici açıkken liste canlı güncellenir
+    }
     var query = '';
     var tab = 0; // 0 önerilen, 1 en hızlı, 2 en düşük ping, 3 favoriler
     final tabs = [
@@ -1046,7 +1180,9 @@ class _HomePageState extends State<HomePage> {
       ),
       builder: (sheetContext) {
         return StatefulBuilder(
-          builder: (ctx, setSheet) {
+          builder: (ctx, setSheet) => ValueListenableBuilder<int>(
+            valueListenable: _serversTick,
+            builder: (ctx, _, __) {
             L10n.watch(ctx);
             final q = query.trim().toLowerCase();
             // Kapalı sunucular listede gösterilmez.
@@ -1114,7 +1250,7 @@ class _HomePageState extends State<HomePage> {
                               ),
                             ),
                           ),
-                          if (_measuring)
+                          if (_measuring || _bgMeasuring)
                             const Padding(
                               padding: EdgeInsets.only(right: 8),
                               child: SizedBox(
@@ -1175,6 +1311,30 @@ class _HomePageState extends State<HomePage> {
                         padding: const EdgeInsets.fromLTRB(12, 6, 12, 24),
                         itemCount: list.length + 1,
                         itemBuilder: (ctx, i) {
+                          if (i == 0 && tab != 3 && list.isEmpty) {
+                            return Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Column(
+                                children: [
+                                  const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    tr('checking_list'),
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: Colors.white.withAlpha(150),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }
                           if (i == 0 && tab == 3) {
                             return list.isEmpty
                                 ? Padding(
@@ -1319,7 +1479,8 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             );
-          },
+            },
+          ),
         );
       },
     );

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -28,6 +30,7 @@ class VpnServer {
     required this.remoteHost,
     required this.remotePort,
     required this.tcp,
+    this.tlsAuth = false,
   });
 
   final String hostName;
@@ -43,12 +46,23 @@ class VpnServer {
   final int remotePort;
   final bool tcp;
 
-  /// Bu cihazdan ölçülen bağlantı süresi (ms).
-  /// null: ölçülmedi, -1: ulaşılamadı.
+  /// tls-auth / tls-crypt kullanıyorsa el sıkışma kontrolü yapılamaz.
+  final bool tlsAuth;
+
+  /// Bu cihazdan ölçülen VPN el sıkışma süresi (ms).
+  /// null: ölçülmedi, -1: ulaşılamadı,
+  /// -3: kapı açık ama VPN cevap vermedi.
   int? latency;
 
+  /// Yalnızca TCP bağlantı süresi (yedek ölçüm için).
+  int? tcpLatency;
+
+  /// Son kontrol zamanı.
+  DateTime? checkedAt;
+
+  /// Sunucu şu an kesin çalışıyor (VPN el sıkışması başarılı).
   bool get reachable => latency != null && latency! >= 0;
-  bool get unreachable => latency == -1;
+  bool get unreachable => latency == -1 || latency == -3;
 
   /// Gösterilecek ping: ölçülen varsa o, yoksa bildirilen.
   int get displayPing => reachable ? latency! : ping;
@@ -180,6 +194,9 @@ class ServerApi {
         remoteHost: host,
         remotePort: port,
         tcp: tcp,
+        tlsAuth: config.contains('<tls-auth>') ||
+            config.contains('<tls-crypt') ||
+            RegExp(r'^\s*tls-(auth|crypt)', multiLine: true).hasMatch(config),
       ));
     }
     servers.sort((a, b) => b.score.compareTo(a.score));
@@ -220,27 +237,141 @@ class ServerApi {
     return '${lines.join('\n')}\n';
   }
 
-  /// Sunucuya TCP bağlantısı kurma süresini ölçer. UDP sunucularda
-  /// adresin çözülebildiğini kontrol eder.
+  /// true: sunucuya gerçek VPN el sıkışması denenir.
+  /// false: yalnızca kapının açık olduğuna bakılır (yedek mod).
+  static bool handshakeCheck = true;
+
+  /// OpenVPN P_CONTROL_HARD_RESET_CLIENT_V2 paketi (tls-auth yok):
+  /// başlık + 8 bayt oturum kimliği + 0 onay + 4 bayt paket numarası.
+  static Uint8List hardResetPacket() {
+    final rnd = Random();
+    final b = BytesBuilder()
+      ..addByte((7 << 3) | 0); // opcode 7, key_id 0
+    for (var i = 0; i < 8; i++) {
+      b.addByte(rnd.nextInt(256));
+    }
+    b
+      ..addByte(0) // onay listesi boş
+      ..add(const [0, 0, 0, 0]); // paket numarası 0
+    return b.toBytes();
+  }
+
+  /// Sunucunun cevabı P_CONTROL_HARD_RESET_SERVER_V2 mi?
+  static bool isServerReset(int firstByte) => (firstByte >> 3) == 8;
+
+  /// Sunucuyu kontrol eder. Dönüş: el sıkışma süresi (ms),
+  /// -1 ulaşılamadı, -3 kapı açık ama VPN cevap vermedi, -2 ölçülemez.
   static Future<int> measure(
     VpnServer s, {
-    Duration timeout = const Duration(milliseconds: 1800),
+    Duration timeout = const Duration(milliseconds: 2500),
   }) async {
+    if (!handshakeCheck || s.tlsAuth) {
+      return s.tcp ? _tcpOnly(s, timeout) : -2;
+    }
+    return s.tcp ? _probeTcp(s, timeout) : _probeUdp(s, timeout);
+  }
+
+  static Future<int> _tcpOnly(VpnServer s, Duration timeout) async {
     final sw = Stopwatch()..start();
     try {
-      if (s.tcp) {
-        final socket = await Socket.connect(
-          s.remoteHost,
-          s.remotePort,
-          timeout: timeout,
-        );
-        sw.stop();
-        socket.destroy();
-        return sw.elapsedMilliseconds;
-      }
-      return -2; // UDP: ölçülemez
+      final socket =
+          await Socket.connect(s.remoteHost, s.remotePort, timeout: timeout);
+      sw.stop();
+      socket.destroy();
+      s.tcpLatency = sw.elapsedMilliseconds;
+      return sw.elapsedMilliseconds;
     } catch (_) {
       return -1;
+    }
+  }
+
+  static Future<int> _probeTcp(VpnServer s, Duration timeout) async {
+    final sw = Stopwatch()..start();
+    Socket? connected;
+    try {
+      connected =
+          await Socket.connect(s.remoteHost, s.remotePort, timeout: timeout);
+    } catch (_) {
+      return -1;
+    }
+    final socket = connected!;
+    s.tcpLatency = sw.elapsedMilliseconds;
+    StreamSubscription<Uint8List>? sub;
+    try {
+      final pkt = hardResetPacket();
+      final got = <int>[];
+      final reply = Completer<int>();
+      sub = socket.listen(
+        (data) {
+          got.addAll(data);
+          // TCP'de ilk 2 bayt uzunluk, 3. bayt başlık.
+          if (got.length >= 3 && !reply.isCompleted) reply.complete(got[2]);
+        },
+        onError: (Object _) {
+          if (!reply.isCompleted) reply.complete(-1);
+        },
+        onDone: () {
+          if (!reply.isCompleted) reply.complete(-1);
+        },
+        cancelOnError: true,
+      );
+      socket.add([pkt.length >> 8, pkt.length & 0xff, ...pkt]);
+      final first = await reply.future.timeout(timeout, onTimeout: () => -1);
+      sw.stop();
+      if (first >= 0 && isServerReset(first)) return sw.elapsedMilliseconds;
+      return -3;
+    } catch (_) {
+      return -3;
+    } finally {
+      await sub?.cancel();
+      socket.destroy();
+    }
+  }
+
+  static Future<int> _probeUdp(VpnServer s, Duration timeout) async {
+    RawDatagramSocket? socket;
+    try {
+      final addrs = await InternetAddress.lookup(s.remoteHost).timeout(timeout);
+      if (addrs.isEmpty) return -1;
+      final addr = addrs.first;
+      final sock = await RawDatagramSocket.bind(
+        addr.type == InternetAddressType.IPv6
+            ? InternetAddress.anyIPv6
+            : InternetAddress.anyIPv4,
+        0,
+      );
+      socket = sock;
+      final reply = Completer<int>();
+      final sw = Stopwatch()..start();
+      sock.listen((event) {
+        if (event != RawSocketEvent.read) return;
+        final d = sock.receive();
+        if (d != null && d.data.isNotEmpty && !reply.isCompleted) {
+          reply.complete(d.data[0]);
+        }
+      });
+      sock.send(hardResetPacket(), addr, s.remotePort);
+      final first = await reply.future.timeout(timeout, onTimeout: () => -1);
+      sw.stop();
+      return first >= 0 && isServerReset(first) ? sw.elapsedMilliseconds : -1;
+    } catch (_) {
+      return -1;
+    } finally {
+      socket?.close();
+    }
+  }
+
+  /// İlk ölçümde hiçbir sunucu el sıkışmaya cevap vermediyse ama kapıları
+  /// açıksa, yedek moda geçer: kapısı açık olanları çalışıyor sayar.
+  /// Ağ VPN protokolünü kısıtlıyorsa uygulama yine de çalışsın diye.
+  static void applyFallback(List<VpnServer> servers) {
+    if (!handshakeCheck) return;
+    if (servers.any((s) => s.reachable)) return;
+    final weak = servers.where((s) => s.latency == -3).toList();
+    if (weak.isEmpty) return;
+    handshakeCheck = false;
+    for (final s in weak) {
+      s.latency = s.tcpLatency;
     }
   }
 
@@ -251,13 +382,21 @@ class ServerApi {
     int parallel = 24,
     VoidCallback? onProgress,
     bool Function()? shouldStop,
+    bool keepLatency = false,
   }) async {
     for (var i = 0; i < servers.length; i += parallel) {
       if (shouldStop?.call() ?? false) return;
       final batch = servers.skip(i).take(parallel);
       await Future.wait(batch.map((s) async {
         final r = await measure(s);
-        s.latency = r == -2 ? null : r;
+        s.checkedAt = DateTime.now();
+        // Tünel içinden ölçerken süreler yanıltıcıdır: yalnızca çalışıp
+        // çalışmadığını güncelle, eski süreyi koru.
+        if (keepLatency && r >= 0 && s.reachable) {
+          // değişiklik yok
+        } else {
+          s.latency = r == -2 ? null : r;
+        }
         onProgress?.call();
       }));
     }
