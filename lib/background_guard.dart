@@ -7,7 +7,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 ///
 /// start/stop çağrıları sıraya alınır ve her seferinde yalnızca son istenen
 /// duruma göre hareket edilir; hızlı aç-kapa yarışında servis açık kalmaz.
-class KeepAlive {
+class BackgroundGuard {
   static bool _initialized = false;
 
   // İstenen durum

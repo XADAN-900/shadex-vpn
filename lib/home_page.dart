@@ -9,7 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ip_info.dart';
-import 'keep_alive.dart';
+import 'background_guard.dart';
 import 'l10n.dart';
 import 'servers.dart';
 import 'settings.dart';
@@ -128,11 +128,11 @@ class _HomePageState extends State<HomePage> {
   void _syncKeepAlive() {
     final connecting = _busy && !_connected;
     if (connecting) {
-      KeepAlive.start(_note ?? tr('st_connecting'));
+      BackgroundGuard.start(_note ?? tr('st_connecting'));
     } else if (_prepping && !_connected) {
-      KeepAlive.start(tr('servers_preparing'));
+      BackgroundGuard.start(tr('servers_preparing'));
     } else {
-      KeepAlive.stop();
+      BackgroundGuard.stop();
     }
   }
 
@@ -200,7 +200,7 @@ class _HomePageState extends State<HomePage> {
     _watchdog?.cancel();
     _ipTimer?.cancel();
     _recheckTimer?.cancel();
-    KeepAlive.stop();
+    BackgroundGuard.stop();
     _serversTick.dispose();
     super.dispose();
   }
