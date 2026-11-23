@@ -266,9 +266,11 @@ class ServerApi {
     Duration timeout = const Duration(milliseconds: 2500),
   }) async {
     if (!handshakeCheck || s.tlsAuth) {
-      return s.tcp ? _tcpOnly(s, timeout) : -2;
+      if (!s.tcp) return -2;
+      return _tcpOnly(s, timeout);
     }
-    return s.tcp ? _probeTcp(s, timeout) : _probeUdp(s, timeout);
+    if (s.tcp) return _probeTcp(s, timeout);
+    return _probeUdp(s, timeout);
   }
 
   static Future<int> _tcpOnly(VpnServer s, Duration timeout) async {
