@@ -14,6 +14,9 @@
 
 - **Ücretsiz ve reklamsız:** dünyanın dört bir yanında sunucu, kayıt yok, hesap yok.
 - **Hızlı bağlantı:** sunucuların gerçek hızını cihazından ölçer, en hızlısını otomatik seçer. Bağlantı kurulamazsa sıradaki en iyi sunucuyu kendisi dener.
+- **Hız testi:** bağlanınca tünelin gerçek hızını ölçüp gösterir; otomatik seçilen sunucu çok yavaşsa daha hızlısına kendiliğinden geçer.
+- **Canlı sunucu değiştirme:** bağlıyken başka ülke seç, bağlantıyı kesmeden geçsin.
+- **Kapalı sunucu yok:** ulaşılamayan sunucular listede hiç görünmez.
 - **Tek dokunuş:** büyük bağlan düğmesi; bağlıyken nabız animasyonu, süre sayacı, indirme ve yükleme miktarı ile hızı.
 - **Konum seçici:** ülke arama; *Önerilen / En hızlı / En düşük ping / Favoriler* sekmeleri; renkli ping rozetleri; favori ülkeler.
 - **IP kontrolü:** bağlanmadan önce gerçek IP'ni, bağlandıktan sonra VPN IP'sini ve ülkesini gösterir.

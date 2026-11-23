@@ -78,6 +78,12 @@ class _HomePageState extends State<HomePage> {
   String? _note;
   bool _autoConnectDone = false;
   bool _notifAsked = false;
+  String? _activeHost;
+
+  // Tünel içi hız testi
+  double? _speedMbps;
+  bool _speedTesting = false;
+  int _speedToken = 0;
   int _ipRetries = 0;
 
   // Sunucular
@@ -86,6 +92,7 @@ class _HomePageState extends State<HomePage> {
   bool _userPicked = false;
   bool _loading = true;
   bool _measuring = false;
+  bool _bgMeasuring = false;
   String? _error;
   Set<String> _favorites = {};
 
@@ -200,25 +207,46 @@ class _HomePageState extends State<HomePage> {
     _maybeAutoConnect();
   }
 
-  /// Sunuculara bu cihazdan gerçek bağlantı süresini ölçer ve
-  /// kullanıcı elle seçmediyse en hızlısını seçer.
+  /// Sunuculara bu cihazdan gerçek bağlantı süresini ölçer. Önce en iyi
+  /// 60 sunucu ölçülür ve kullanıcı elle seçmediyse en iyisi seçilir;
+  /// kalanlar arka planda ölçülür. Kapalı çıkanlar listeden gizlenir.
   Future<void> _measure() async {
     // Tünel açıkken ölçüm VPN'in içinden yapılır ve yanıltır.
-    if (!mounted || _servers.isEmpty || !_idle || _starting || _measuring) {
+    if (!mounted ||
+        _servers.isEmpty ||
+        !_idle ||
+        _starting ||
+        _measuring ||
+        _bgMeasuring) {
       return;
     }
     final list = _servers;
-    setState(() => _measuring = true);
-    await ServerApi.measureAll(list, onProgress: () {
+    bool stop() => !mounted || !identical(list, _servers) || !_idle || _starting;
+    void tick() {
       if (mounted) setState(() {});
-    });
+    }
+
+    setState(() => _measuring = true);
+    const firstBatch = 60;
+    await ServerApi.measureAll(
+      list.take(firstBatch).toList(),
+      onProgress: tick,
+      shouldStop: stop,
+    );
     if (!mounted) return;
-    setState(() {
-      _measuring = false;
-      if (identical(list, _servers) && !_userPicked && !_locked) {
-        _selected = ServerApi.ranked(list).first;
-      }
-    });
+    if (identical(list, _servers) && !_userPicked && !_locked) {
+      _selected = ServerApi.ranked(list).first;
+    }
+    setState(() => _measuring = false);
+    if (list.length > firstBatch) {
+      _bgMeasuring = true;
+      await ServerApi.measureAll(
+        list.sublist(firstBatch),
+        onProgress: tick,
+        shouldStop: stop,
+      );
+      _bgMeasuring = false;
+    }
   }
 
   void _maybeAutoConnect() {
@@ -267,6 +295,88 @@ class _HomePageState extends State<HomePage> {
     _settings.lastHost = null;
   }
 
+  /// Seçiciden seçim: bağlıysa bağlantıyı kesmeden yeni sunucuya geçer.
+  void _choose(VpnServer? s) {
+    final before = _activeHost;
+    if (s == null) {
+      _pickAuto();
+    } else {
+      _pickServer(s);
+    }
+    final target = _selected;
+    if (_locked && target != null && target.hostName != before) {
+      _switchTo(target);
+    }
+  }
+
+  /// Açık bağlantıyı kapatıp [s] sunucusuna geçer.
+  Future<void> _switchTo(VpnServer s, {bool keepAttempts = false}) async {
+    if (_settings.haptics) HapticFeedback.selectionClick();
+    _watchdog?.cancel();
+    _userCancelled = true; // süren denemeler dursun
+    _speedToken++;
+    setState(() {
+      _note = tr('switching');
+      _starting = true;
+      _speedMbps = null;
+      _speedTesting = false;
+    });
+    try {
+      await _engine.disconnect();
+    } catch (_) {}
+    if (!mounted) return;
+    if (!keepAttempts) {
+      _attempt = 0;
+      _tried.clear();
+    }
+    _userCancelled = false;
+    setState(() => _note = tr('switching'));
+    await _connectTo(s);
+  }
+
+  /// Bağlanınca tünelden kısa bir hız testi yapar. Sunucu otomatik
+  /// seçildiyse ve çok yavaşsa daha hızlısına geçer.
+  Future<void> _runSpeedTest() async {
+    final token = ++_speedToken;
+    setState(() {
+      _speedTesting = true;
+      _speedMbps = null;
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    if (!mounted || token != _speedToken || !_connected) return;
+    final mbps = await ServerApi.measureThroughput();
+    if (!mounted || token != _speedToken) return;
+    setState(() {
+      _speedTesting = false;
+      _speedMbps = mbps;
+    });
+
+    const slowMbps = 2.0;
+    if (mbps == null ||
+        mbps >= slowMbps ||
+        !_connected ||
+        _userPicked ||
+        !_settings.autoSwitch ||
+        _attempt >= _maxAttempts) {
+      return;
+    }
+    VpnServer? next;
+    for (final c in ServerApi.ranked(_servers)) {
+      if (!_tried.contains(c.hostName) && !c.unreachable) {
+        next = c;
+        break;
+      }
+    }
+    if (next == null) return;
+    final target = next;
+    _snack(tr('slow_switching'));
+    setState(() => _selected = target);
+    await _switchTo(target, keepAttempts: true);
+  }
+
+  String _fmtMbps(double v) =>
+      v >= 10 ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+
   void _toggleFavorite(String country) {
     setState(() {
       final f = {..._favorites};
@@ -285,8 +395,14 @@ class _HomePageState extends State<HomePage> {
       _stageName = name;
       _starting = false;
       if (name == 'connected') _note = null;
+      if (changed && name != 'connected') {
+        _speedToken++;
+        _speedTesting = false;
+        _speedMbps = null;
+      }
     });
     if (!changed) return;
+    if (name == 'connected') _runSpeedTest();
 
     if (name == 'connected') {
       _watchdog?.cancel();
@@ -338,6 +454,7 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     _attempt++;
     _tried.add(s.hostName);
+    _activeHost = s.hostName;
     setState(() {
       _selected = s;
       _starting = true;
@@ -414,7 +531,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _disconnect({bool byUser = false}) async {
-    if (byUser) _userCancelled = true;
+    if (byUser) {
+      _userCancelled = true;
+      _activeHost = null;
+    }
     _watchdog?.cancel();
     setState(() {
       _starting = false;
@@ -621,7 +741,15 @@ class _HomePageState extends State<HomePage> {
 
   Widget _timerArea() {
     final s = _selected;
-    final where = s == null ? '' : '${s.flag} ${s.countryLong}';
+    final speed = _speedMbps;
+    final where = s == null
+        ? ''
+        : [
+            '${s.flag} ${s.countryLong}',
+            if (_speedTesting) tr('speed_testing'),
+            if (!_speedTesting && speed != null)
+              tr('speed_now', {'v': _fmtMbps(speed)}),
+          ].join(' • ');
 
     return ConstrainedBox(
       constraints: const BoxConstraints(minHeight: 58),
@@ -809,10 +937,15 @@ class _HomePageState extends State<HomePage> {
     } else {
       leading = FlagBadge(s.flag);
       title = _userPicked ? s.countryLong : tr('fastest_server');
-      if (_locked) {
-        subtitle = _userPicked
-            ? tr('disconnect_to_change')
-            : '${s.countryLong} • ${s.speedText}';
+      final speed = _speedMbps;
+      if (_connected) {
+        subtitle = _speedTesting
+            ? '${s.countryLong} • ${tr('speed_testing')}'
+            : speed != null
+                ? '${s.countryLong} • ${tr('speed_now', {'v': _fmtMbps(speed)})}'
+                : '${s.countryLong} • ${tr('tap_to_change')}';
+      } else if (_busy) {
+        subtitle = s.countryLong;
       } else if (_measuring) {
         subtitle = tr('measuring');
       } else {
@@ -825,7 +958,7 @@ class _HomePageState extends State<HomePage> {
         offline: s.unreachable,
         offlineText: tr('offline'),
       );
-      onTap = _locked ? null : _openServerPicker;
+      onTap = _openServerPicker;
     }
 
     return GlassCard(
@@ -916,10 +1049,12 @@ class _HomePageState extends State<HomePage> {
           builder: (ctx, setSheet) {
             L10n.watch(ctx);
             final q = query.trim().toLowerCase();
+            // Kapalı sunucular listede gösterilmez.
             Iterable<VpnServer> src = _servers.where((s) =>
-                q.isEmpty ||
-                s.countryLong.toLowerCase().contains(q) ||
-                s.countryShort.toLowerCase() == q);
+                !s.unreachable &&
+                (q.isEmpty ||
+                    s.countryLong.toLowerCase().contains(q) ||
+                    s.countryShort.toLowerCase() == q));
             if (tab == 3) {
               src = src.where((s) => _favorites.contains(s.countryShort));
             }
@@ -1060,7 +1195,7 @@ class _HomePageState extends State<HomePage> {
                               child: GlassCard(
                                 highlight: _userPicked ? null : AppColors.amber,
                                 padding: const EdgeInsets.all(12),
-                                onTap: () => pick(_pickAuto),
+                                onTap: () => pick(() => _choose(null)),
                                 child: Row(
                                   children: [
                                     const Icon(
@@ -1113,12 +1248,12 @@ class _HomePageState extends State<HomePage> {
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 8),
                             child: Opacity(
-                              opacity: s.unreachable ? 0.5 : 1,
+                              opacity: 1,
                               child: GlassCard(
                                 highlight: selected ? AppColors.violet : null,
                                 padding:
                                     const EdgeInsets.fromLTRB(10, 6, 2, 6),
-                                onTap: () => pick(() => _pickServer(s)),
+                                onTap: () => pick(() => _choose(s)),
                                 child: Row(
                                   children: [
                                     FlagBadge(s.flag, size: 42),

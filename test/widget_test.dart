@@ -80,4 +80,17 @@ void main() {
       isFalse,
     );
   });
+
+  test('ölçüm durdurulabilir', () async {
+    final list = ServerApi.parse(body);
+    var calls = 0;
+    await ServerApi.measureAll(
+      list,
+      parallel: 1,
+      shouldStop: () => calls++ > 0, // ilk gruptan sonra dur
+    );
+    // İlk sunucu ölçüldü (TCP: ulaşılamaz = -1), ikincisine geçilmedi.
+    expect(list[0].latency, isNotNull);
+    expect(list[1].latency, isNull);
+  });
 }

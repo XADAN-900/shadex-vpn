@@ -244,21 +244,57 @@ class ServerApi {
     }
   }
 
-  /// İlk [count] sunucuyu paralel ölçer; [onProgress] her sonuçta çağrılır.
+  /// Sunucuları paralel ölçer; [onProgress] her sonuçta çağrılır.
+  /// [shouldStop] true dönerse kalan gruplar ölçülmez.
   static Future<void> measureAll(
     List<VpnServer> servers, {
-    int count = 60,
-    int parallel = 20,
+    int parallel = 24,
     VoidCallback? onProgress,
+    bool Function()? shouldStop,
   }) async {
-    final targets = servers.take(count).toList();
-    for (var i = 0; i < targets.length; i += parallel) {
-      final batch = targets.skip(i).take(parallel);
+    for (var i = 0; i < servers.length; i += parallel) {
+      if (shouldStop?.call() ?? false) return;
+      final batch = servers.skip(i).take(parallel);
       await Future.wait(batch.map((s) async {
         final r = await measure(s);
         s.latency = r == -2 ? null : r;
         onProgress?.call();
       }));
+    }
+  }
+
+  /// Tünel içinden kısa bir indirme yapıp hızı Mbps olarak ölçer.
+  /// En fazla ~7 saniye sürer, en fazla 2 MB indirir. Ölçülemezse null.
+  static Future<double?> measureThroughput() async {
+    final client = http.Client();
+    final sw = Stopwatch();
+    var got = 0;
+    try {
+      final req = http.Request(
+        'GET',
+        Uri.parse('https://speed.cloudflare.com/__down?bytes=2000000'),
+      );
+      final res = await client.send(req).timeout(const Duration(seconds: 6));
+      if (res.statusCode != 200) return null;
+      sw.start();
+      try {
+        await for (final chunk
+            in res.stream.timeout(const Duration(seconds: 4))) {
+          got += chunk.length;
+          if (sw.elapsedMilliseconds > 7000) break;
+        }
+      } on TimeoutException {
+        // takıldı: o ana kadar inenle hesapla
+      }
+      sw.stop();
+      if (got < 64 * 1024 || sw.elapsedMicroseconds <= 0) {
+        return got > 0 ? 0.1 : null;
+      }
+      return got * 8 / (sw.elapsedMicroseconds / 1e6) / 1e6;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close();
     }
   }
 
@@ -276,7 +312,7 @@ class ServerApi {
     double quality(VpnServer s) {
       final mbps = (s.speed / 1000000).clamp(0, 300).toDouble();
       final perUser = mbps / (1 + s.sessions / 8);
-      return perUser * 2 + mbps * 0.5 - s.latency! / 15;
+      return perUser * 2 + mbps * 0.5 - s.latency! / 8;
     }
 
     list.sort((a, b) {
